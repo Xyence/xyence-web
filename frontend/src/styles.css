@@ -416,6 +416,16 @@ h1 {
   line-height: 1.8;
 }
 
+.rich-text ul,
+.rich-text ol {
+  margin: 16px 0 16px 24px;
+  padding-left: 20px;
+}
+
+.rich-text li {
+  margin-bottom: 8px;
+}
+
 .rich-text h2,
 .rich-text h3 {
   margin-top: 24px;
