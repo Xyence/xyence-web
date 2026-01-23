@@ -20,6 +20,30 @@ Django + React application for Xyence consulting, including a publishing system 
 5. Admin panel: `http://localhost:8000/admin/`
 6. Frontend: `http://localhost:8080/`
 
+## Production reverse proxy (Nginx + Certbot)
+Use the production compose file to enable HTTPS. This is **not** required for local dev.
+
+1) Set your domain in an env file (example `prod.env`):
+```
+DOMAIN=xyence.io
+```
+
+2) Start core services + nginx:
+```
+docker compose --env-file prod.env -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+3) Obtain the first certificate:
+```
+docker compose --env-file prod.env -f docker-compose.yml -f docker-compose.prod.yml run --rm certbot \
+  certonly --webroot -w /var/www/certbot -d xyence.io --email you@xyence.io --agree-tos --no-eff-email
+```
+
+4) Reload nginx:
+```
+docker compose --env-file prod.env -f docker-compose.yml -f docker-compose.prod.yml exec nginx nginx -s reload
+```
+
 ## Google SSO
 - Provide `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `backend/.env`.
 - The admin login page includes a Google sign-in button at `http://localhost:8000/admin/`.
