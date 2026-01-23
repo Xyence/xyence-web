@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-xyence}
+      POSTGRES_USER: ${POSTGRES_USER:-xyence}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xyence}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      POSTGRES_HOST: db
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_media:/app/media
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "8080:80"
+
+volumes:
+  postgres_data:
+  backend_media:
