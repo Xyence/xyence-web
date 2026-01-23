@@ -45,6 +45,8 @@ DOMAIN=xyence.io docker compose -f docker-compose.yml -f docker-compose.prod.yml
 docker compose --env-file prod.env -f docker-compose.yml -f docker-compose.prod.yml exec nginx nginx -s reload
 ```
 
+The `nginx-reload` service automatically reloads nginx every 12 hours to pick up renewed certificates.
+
 ## Google SSO
 - Provide `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `backend/.env`.
 - The admin login page includes a Google sign-in button at `http://localhost:8000/admin/`.

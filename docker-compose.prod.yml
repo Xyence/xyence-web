@@ -27,6 +27,16 @@ services:
     entrypoint: >
       /bin/sh -c "trap exit TERM; while :; do sleep 12h & wait $${!}; certbot renew; done"
 
+  nginx-reload:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - nginx
+    volumes:
+      - certbot_certs:/etc/letsencrypt:ro
+    entrypoint: >
+      /bin/sh -c "trap exit TERM; while :; do sleep 12h & wait $${!}; nginx -s reload; done"
+
 volumes:
   certbot_www:
   certbot_certs:
