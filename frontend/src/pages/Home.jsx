@@ -132,10 +132,13 @@ export default function Home() {
               regulated industries, SaaS platforms, and high-growth product
               teams.
             </p>
-            <a className="ghost" href="mailto:hello@xyence.com">
+            <a className="ghost" href="mailto:info@xyence.io">
               Partner on Xyn
             </a>
           </div>
+        </div>
+        <div className="xyn-visual">
+          <img src="/xyence-stl.png" alt="Xyence platform storytelling visual" />
         </div>
       </section>
 

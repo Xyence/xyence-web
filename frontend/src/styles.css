@@ -335,6 +335,21 @@ h1 {
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
+.xyn-visual {
+  margin: 32px auto 0;
+  max-width: 900px;
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.xyn-visual img {
+  width: 100%;
+  max-height: 360px;
+  display: block;
+  object-fit: cover;
+}
+
 .mono {
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.8rem;
