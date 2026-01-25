@@ -1,5 +1,5 @@
 from django.db import migrations, models
-import ckeditor_uploader.fields
+import django_ckeditor_5.fields
 
 
 class Migration(migrations.Migration):
@@ -15,7 +15,7 @@ class Migration(migrations.Migration):
                 ("title", models.CharField(max_length=200)),
                 ("slug", models.SlugField(blank=True, max_length=220, unique=True)),
                 ("summary", models.TextField(blank=True)),
-                ("body", ckeditor_uploader.fields.RichTextUploadingField()),
+                ("body", django_ckeditor_5.fields.CKEditor5Field("body", config_name="default")),
                 ("status", models.CharField(choices=[("draft", "Draft"), ("published", "Published")], default="draft", max_length=20)),
                 ("published_at", models.DateTimeField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),

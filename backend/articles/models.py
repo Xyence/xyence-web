@@ -3,7 +3,7 @@ from django.db.models import Max
 from django.contrib.postgres.search import SearchVectorField
 from django.utils import timezone
 from django.utils.text import slugify
-from ckeditor_uploader.fields import RichTextUploadingField
+from django_ckeditor_5.fields import CKEditor5Field
 
 
 class Article(models.Model):
@@ -15,7 +15,7 @@ class Article(models.Model):
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=220, unique=True, blank=True)
     summary = models.TextField(blank=True)
-    body = RichTextUploadingField()
+    body = CKEditor5Field("body", config_name="default")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
     published_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -45,7 +45,7 @@ class ArticleVersion(models.Model):
     version_number = models.PositiveIntegerField()
     title = models.CharField(max_length=200)
     summary = models.TextField(blank=True)
-    body = RichTextUploadingField()
+    body = CKEditor5Field("body", config_name="default")
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default="ai")
     prompt = models.TextField(blank=True)
     model_name = models.CharField(max_length=100, blank=True)

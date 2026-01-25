@@ -19,8 +19,7 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     "rest_framework",
     "corsheaders",
-    "ckeditor",
-    "ckeditor_uploader",
+    "django_ckeditor_5",
     "allauth",
     "allauth.account",
     "allauth.socialaccount",
@@ -134,11 +133,27 @@ REST_FRAMEWORK = {
     ]
 }
 
-CKEDITOR_UPLOAD_PATH = "uploads/"
-CKEDITOR_CONFIGS = {
+CKEDITOR_5_CONFIGS = {
     "default": {
-        "toolbar": "full",
-        "height": 400,
-        "width": "auto",
+        "toolbar": {
+            "items": [
+                "heading",
+                "|",
+                "bold",
+                "italic",
+                "link",
+                "bulletedList",
+                "numberedList",
+                "blockQuote",
+                "|",
+                "insertTable",
+                "imageUpload",
+                "|",
+                "undo",
+                "redo",
+            ],
+        },
     }
 }
+
+CKEDITOR_5_FILE_UPLOAD_PERMISSION = "authenticated"

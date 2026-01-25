@@ -1,6 +1,6 @@
 from django.db import migrations, models
 import django.db.models.deletion
-import ckeditor_uploader.fields
+import django_ckeditor_5.fields
 
 
 class Migration(migrations.Migration):
@@ -37,7 +37,7 @@ class Migration(migrations.Migration):
                 ("version_number", models.PositiveIntegerField()),
                 ("title", models.CharField(max_length=200)),
                 ("summary", models.TextField(blank=True)),
-                ("body", ckeditor_uploader.fields.RichTextUploadingField()),
+                ("body", django_ckeditor_5.fields.CKEditor5Field("body", config_name="default")),
                 (
                     "source",
                     models.CharField(choices=[("ai", "AI"), ("manual", "Manual")], default="ai", max_length=20),

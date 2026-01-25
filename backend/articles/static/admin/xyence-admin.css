@@ -34,6 +34,15 @@ body {
   margin: 0 0 12px;
 }
 
+.dashboard .app-list {
+  flex: 1 1 640px;
+  min-width: 520px;
+}
+
+.dashboard .module table {
+  width: 100%;
+}
+
 #content-main {
   flex: 1 1 auto;
   float: none;
