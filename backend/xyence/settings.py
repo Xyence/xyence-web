@@ -152,9 +152,16 @@ CKEDITOR_5_CONFIGS = {
                 "|",
                 "insertTable",
                 "imageUpload",
+                "codeBlock",
                 "|",
                 "undo",
                 "redo",
+            ],
+        },
+        "codeBlock": {
+            "languages": [
+                {"language": "plaintext", "label": "Plain text"},
+                {"language": "mermaid", "label": "Mermaid"},
             ],
         },
     }
