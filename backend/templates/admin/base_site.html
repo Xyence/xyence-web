@@ -1,11 +1,16 @@
 {% extends "admin/base.html" %}
 {% load static %}
 
-{% block title %}{{ site_title }}{% endblock %}
+{% block title %}Xyence.io admin{% endblock %}
 
 {% block extrastyle %}
   {{ block.super }}
-  <link rel="stylesheet" href="{% static 'admin/xyence-admin.css' %}">
+  <link rel="stylesheet" href="{% static 'admin/xyence-admin.css' %}?v=20260125">
+{% endblock %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <link rel="icon" href="/xyence-logo.png" type="image/png">
 {% endblock %}
 
 {% block branding %}

@@ -1,6 +1,10 @@
 {% extends "admin/base_site.html" %}
 {% load i18n static %}
 
+{% block bodyclass %}login{% endblock %}
+{% block nav-sidebar %}{% endblock %}
+{% block breadcrumbs %}{% endblock %}
+
 {% block content %}
   <div id="content-main">
     <form action="{{ app_path }}" method="post" id="login-form">
@@ -24,9 +28,6 @@
     <div style="margin-top: 20px;">
       <a href="/accounts/google/login/?next=/admin/" class="button" style="display: inline-block; padding: 10px 16px; background: #1a3f75; color: #fff; border-radius: 999px; text-decoration: none;">
         Sign in with Google
-      </a>
-      <a href="/accounts/github/login/?next=/admin/" class="button" style="display: inline-block; padding: 10px 16px; margin-left: 12px; background: #24292f; color: #fff; border-radius: 999px; text-decoration: none;">
-        Sign in with GitHub
       </a>
     </div>
   </div>

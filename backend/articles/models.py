@@ -1,6 +1,5 @@
 from django.db import models
 from django.db.models import Max
-from django.contrib.postgres.search import SearchVectorField
 from django.utils import timezone
 from django.utils.text import slugify
 from django_ckeditor_5.fields import CKEditor5Field
@@ -87,75 +86,3 @@ class OpenAIConfig(models.Model):
 
     def __str__(self) -> str:
         return f"OpenAI Config ({self.name})"
-
-
-class GitHubConfig(models.Model):
-    name = models.CharField(max_length=100, default="default")
-    access_token = models.TextField()
-    social_account = models.ForeignKey(
-        "socialaccount.SocialAccount",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-    )
-    organization = models.CharField(max_length=200)
-    organization_ref = models.ForeignKey(
-        "GitHubOrganization",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-    )
-    enabled = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self) -> str:
-        return f"GitHub Config ({self.organization})"
-
-    def organization_login(self) -> str:
-        if self.organization_ref:
-            return self.organization_ref.login
-        return self.organization
-
-
-class GitHubOrganization(models.Model):
-    config = models.ForeignKey(GitHubConfig, on_delete=models.CASCADE, related_name="orgs")
-    login = models.CharField(max_length=200)
-    name = models.CharField(max_length=200, blank=True)
-    description = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ("config", "login")
-
-    def __str__(self) -> str:
-        return self.name or self.login
-
-
-class GitHubRepo(models.Model):
-    config = models.ForeignKey(GitHubConfig, on_delete=models.CASCADE, related_name="repos")
-    name = models.CharField(max_length=200)
-    full_name = models.CharField(max_length=300, unique=True)
-    default_branch = models.CharField(max_length=200, blank=True)
-    description = models.TextField(blank=True)
-    is_active = models.BooleanField(default=True)
-    last_indexed_at = models.DateTimeField(null=True, blank=True)
-
-    def __str__(self) -> str:
-        return self.full_name
-
-
-class GitHubRepoChunk(models.Model):
-    repo = models.ForeignKey(GitHubRepo, on_delete=models.CASCADE, related_name="chunks")
-    path = models.CharField(max_length=500)
-    content = models.TextField()
-    content_search = SearchVectorField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["path"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.repo.full_name}:{self.path}"
