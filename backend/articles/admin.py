@@ -111,10 +111,25 @@ class ShineSeedStatusForm(forms.Form):
 
 
 def _load_runner_fixture() -> str:
-    repo_root = Path(__file__).resolve().parents[3]
-    fixture_path = repo_root / "xyn-contracts" / "fixtures" / "runner.release.json"
-    if fixture_path.exists():
+    fixture_root = os.environ.get("XYN_SEED_CONTRACTS_ROOT", "").strip()
+    if not fixture_root:
+        fixture_root = os.environ.get("SHINESEED_CONTRACTS_ROOT", "").strip()
+    if fixture_root:
+        fixture_path = Path(fixture_root) / "fixtures" / "runner.release.json"
+        if fixture_path.exists():
+            return fixture_path.read_text()
+
+    current = Path(__file__).resolve()
+    fixture_path = None
+    for parent in current.parents:
+        candidate = parent / "xyn-contracts" / "fixtures" / "runner.release.json"
+        if candidate.exists():
+            fixture_path = candidate
+            break
+
+    if fixture_path and fixture_path.exists():
         return fixture_path.read_text()
+
     return json.dumps(
         {
             "apiVersion": "xyn.shineseed/v1",
@@ -148,8 +163,13 @@ def _load_runner_fixture() -> str:
 
 
 def _shineseed_request(method: str, path: str, payload=None):
-    base_url = os.environ.get("SHINESEED_BASE_URL", "http://localhost:8001/api/v1")
-    token = os.environ.get("SHINESEED_API_TOKEN", "").strip()
+    base_url = os.environ.get("XYN_SEED_BASE_URL", "").strip() or os.environ.get(
+        "SHINESEED_BASE_URL",
+        "http://localhost:8001/api/v1"
+    )
+    token = os.environ.get("XYN_SEED_API_TOKEN", "").strip()
+    if not token:
+        token = os.environ.get("SHINESEED_API_TOKEN", "").strip()
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -174,7 +194,7 @@ def _format_shineseed_error(exc: Exception) -> str:
     if isinstance(exc, requests.HTTPError) and exc.response is not None:
         status_code = exc.response.status_code
         if status_code in (401, 403):
-            return "ShineSeed authorization failed. Check SHINESEED_API_TOKEN."
+            return "Xyn Seed authorization failed. Check XYN_SEED_API_TOKEN."
         return f"ShineSeed request failed (HTTP {status_code})."
     return str(exc)
 
@@ -346,7 +366,7 @@ def shineseed_releases_view(request: HttpRequest) -> HttpResponse:
 def _inject_ai_studio_url(urls):
     return [
         path("ai-studio/", admin.site.admin_view(ai_studio_view), name="ai-studio"),
-        path("shineseed/", admin.site.admin_view(shineseed_releases_view), name="shineseed-releases"),
+        path("xyn-seed/", admin.site.admin_view(shineseed_releases_view), name="xyn-seed-releases"),
         *urls,
     ]
 

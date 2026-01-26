@@ -68,11 +68,12 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec backend pyt
 - Access AI Studio at `http://localhost:8000/admin/ai-studio/` to generate drafts.
 - Each AI draft is stored as an `ArticleVersion` and applied to the article as a draft.
 
-## ShineSeed (service management)
-- Manage long-running releases at `http://localhost:8000/admin/shineseed/`.
-- Configure the ShineSeed control plane with env vars:
-  - `SHINESEED_BASE_URL` (default: `http://localhost:8001/api/v1`)
-  - `SHINESEED_API_TOKEN` (optional bearer token)
+## Xyn Seed (service management)
+- Manage long-running releases at `http://localhost:8000/admin/xyn-seed/`.
+- Configure the control plane with env vars:
+  - `XYN_SEED_BASE_URL` (default: `http://localhost:8001/api/v1`)
+  - `XYN_SEED_API_TOKEN` (optional bearer token)
+  - Legacy aliases: `SHINESEED_BASE_URL`, `SHINESEED_API_TOKEN`
 
 ## GitHub Context (AI Studio)
 - Create a `GitHub Config` with a personal access token and organization name.
