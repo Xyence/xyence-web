@@ -1,3 +1,8 @@
+import json
+import os
+from pathlib import Path
+
+import requests
 from django import forms
 from django.contrib import admin, messages
 from django.http import HttpRequest, HttpResponse
@@ -84,6 +89,79 @@ class AIStudioForm(forms.Form):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["context_articles"].queryset = Article.objects.all()
+
+
+class ShineSeedPlanForm(forms.Form):
+    release_spec = forms.CharField(
+        widget=forms.Textarea(attrs={"rows": 18}),
+        help_text="Paste a ReleaseSpec JSON document."
+    )
+
+
+class ShineSeedApplyForm(forms.Form):
+    release_id = forms.CharField(widget=forms.HiddenInput())
+    plan_id = forms.CharField(widget=forms.HiddenInput())
+
+
+class ShineSeedStatusForm(forms.Form):
+    release_id = forms.CharField(
+        required=True,
+        help_text="Release ID in the form namespace.name"
+    )
+
+
+def _load_runner_fixture() -> str:
+    repo_root = Path(__file__).resolve().parents[3]
+    fixture_path = repo_root / "xyn-contracts" / "fixtures" / "runner.release.json"
+    if fixture_path.exists():
+        return fixture_path.read_text()
+    return json.dumps(
+        {
+            "apiVersion": "xyn.shineseed/v1",
+            "kind": "Release",
+            "metadata": {
+                "name": "runner",
+                "namespace": "core",
+                "labels": {"app": "runner", "owner": "shineseed"},
+            },
+            "backend": {"type": "compose"},
+            "components": [
+                {
+                    "name": "runner-api",
+                    "image": "xyence/runner-api:dev",
+                    "ports": [
+                        {"name": "http", "containerPort": 8088, "hostPort": 8088, "protocol": "tcp"}
+                    ],
+                    "env": {
+                        "RUNNER_QUEUE_URL": "redis://runner-redis:6379/0",
+                        "RUNNER_WORKSPACE": "/workspace",
+                        "RUNNER_LOG_LEVEL": "info",
+                    },
+                    "volumeMounts": [{"volume": "runner-workspace", "mountPath": "/workspace"}],
+                }
+            ],
+            "volumes": [{"name": "runner-workspace", "type": "dockerVolume"}],
+            "networks": [{"name": "runner-net", "type": "dockerNetwork"}],
+        },
+        indent=2,
+    )
+
+
+def _shineseed_request(method: str, path: str, payload=None):
+    base_url = os.environ.get("SHINESEED_BASE_URL", "http://localhost:8001/api/v1")
+    token = os.environ.get("SHINESEED_API_TOKEN", "").strip()
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = requests.request(
+        method=method,
+        url=f"{base_url}{path}",
+        json=payload,
+        headers=headers,
+        timeout=15
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def ai_studio_view(request: HttpRequest) -> HttpResponse:
@@ -176,9 +254,84 @@ def ai_studio_view(request: HttpRequest) -> HttpResponse:
     return render(request, "admin/ai_studio.html", context)
 
 
+def shineseed_releases_view(request: HttpRequest) -> HttpResponse:
+    plan = None
+    operation = None
+    status = None
+    plan_form = ShineSeedPlanForm()
+    apply_form = ShineSeedApplyForm()
+    status_form = ShineSeedStatusForm()
+
+    if request.method == "POST":
+        action = request.POST.get("action", "plan")
+        if action == "plan":
+            plan_form = ShineSeedPlanForm(request.POST)
+            if plan_form.is_valid():
+                raw = plan_form.cleaned_data["release_spec"]
+                try:
+                    release_spec = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    messages.error(request, f"Invalid JSON: {exc.msg}")
+                else:
+                    try:
+                        plan = _shineseed_request("post", "/releases/plan", {"release_spec": release_spec})
+                        apply_form = ShineSeedApplyForm(
+                            initial={
+                                "release_id": plan.get("releaseId", ""),
+                                "plan_id": plan.get("planId", ""),
+                            }
+                        )
+                        status_form = ShineSeedStatusForm(
+                            initial={"release_id": plan.get("releaseId", "")}
+                        )
+                        messages.success(request, "Plan generated successfully.")
+                    except requests.RequestException as exc:
+                        messages.error(request, f"ShineSeed plan failed: {exc}")
+        elif action == "apply":
+            apply_form = ShineSeedApplyForm(request.POST)
+            if apply_form.is_valid():
+                release_id = apply_form.cleaned_data["release_id"]
+                plan_id = apply_form.cleaned_data["plan_id"]
+                try:
+                    operation = _shineseed_request(
+                        "post",
+                        "/releases/apply",
+                        {"release_id": release_id, "plan_id": plan_id},
+                    )
+                    status_form = ShineSeedStatusForm(initial={"release_id": release_id})
+                    messages.success(request, "Apply triggered.")
+                except requests.RequestException as exc:
+                    messages.error(request, f"ShineSeed apply failed: {exc}")
+        elif action == "status":
+            status_form = ShineSeedStatusForm(request.POST)
+            if status_form.is_valid():
+                release_id = status_form.cleaned_data["release_id"]
+                try:
+                    status = _shineseed_request("get", f"/releases/{release_id}/status")
+                    messages.success(request, "Status refreshed.")
+                except requests.RequestException as exc:
+                    messages.error(request, f"Status check failed: {exc}")
+
+    if request.method == "GET":
+        plan_form = ShineSeedPlanForm(initial={"release_spec": _load_runner_fixture()})
+
+    context = {
+        **admin.site.each_context(request),
+        "title": "ShineSeed Releases",
+        "plan_form": plan_form,
+        "apply_form": apply_form,
+        "status_form": status_form,
+        "plan": plan,
+        "operation": operation,
+        "status": status,
+    }
+    return render(request, "admin/shineseed_releases.html", context)
+
+
 def _inject_ai_studio_url(urls):
     return [
         path("ai-studio/", admin.site.admin_view(ai_studio_view), name="ai-studio"),
+        path("shineseed/", admin.site.admin_view(shineseed_releases_view), name="shineseed-releases"),
         *urls,
     ]
 

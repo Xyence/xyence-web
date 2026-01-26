@@ -84,6 +84,15 @@
               <td></td>
               <td></td>
             </tr>
+            <tr class="model-ai-studio{% if '/admin/shineseed/' in request.path %} current-model{% endif %}">
+              <th scope="row" id="ai-studio-shineseed">
+                <a href="/admin/shineseed/"{% if '/admin/shineseed/' in request.path %} aria-current="page"{% endif %}>
+                  {% translate 'Manage releases' %}
+                </a>
+              </th>
+              <td></td>
+              <td></td>
+            </tr>
           </table>
         </div>
 
