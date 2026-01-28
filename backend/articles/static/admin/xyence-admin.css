@@ -493,6 +493,25 @@ div.breadcrumbs a {
     white-space: normal;
     word-break: break-word;
   }
+
+  .dashboard .app-list .module {
+    overflow-x: hidden;
+  }
+
+  .dashboard .app-list table {
+    width: 100% !important;
+  }
+
+  .dashboard .app-list th,
+  .dashboard .app-list td {
+    padding-right: 10px;
+  }
+
+  .dashboard .app-list td:last-child,
+  .dashboard .app-list td.addlink,
+  .dashboard .app-list td.changelink {
+    display: none;
+  }
 }
 
 /* Hide sidebar column on login page (permission panel/filter bar). */
