@@ -47,6 +47,21 @@ class ArticleAdmin(admin.ModelAdmin):
     prepopulated_fields = {"slug": ("title",)}
     ordering = ("-published_at", "-created_at")
     inlines = [ArticleVersionInline]
+    actions = ["create_version_snapshot"]
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if obj.status == "published":
+            obj.create_version_if_changed(source="manual")
+
+    def create_version_snapshot(self, request, queryset):
+        created = 0
+        for article in queryset:
+            if article.create_version_if_changed(source="manual"):
+                created += 1
+        self.message_user(request, f"Created {created} version snapshot(s).", messages.SUCCESS)
+
+    create_version_snapshot.short_description = "Create version snapshot(s)"
 
 
 @admin.register(ArticleVersion)

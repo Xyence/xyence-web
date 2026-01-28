@@ -1,17 +1,24 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useParams } from "react-router-dom";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
 export default function ArticleDetail() {
   const { slug } = useParams();
+  const location = useLocation();
+  const query = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const version = query.get("version");
   const [article, setArticle] = useState(null);
   const [loading, setLoading] = useState(true);
   const bodyRef = useRef(null);
 
   useEffect(() => {
     let isMounted = true;
-    fetch(`${API_BASE}/api/articles/${slug}/`)
+    const url = new URL(`${API_BASE}/api/articles/${slug}/`, window.location.origin);
+    if (version) {
+      url.searchParams.set("version", version);
+    }
+    fetch(url.toString())
       .then((res) => res.json())
       .then((data) => {
         if (isMounted) {
@@ -32,7 +39,7 @@ export default function ArticleDetail() {
     return () => {
       isMounted = false;
     };
-  }, [slug]);
+  }, [slug, version]);
 
   useEffect(() => {
     const root = bodyRef.current;
@@ -88,11 +95,32 @@ export default function ArticleDetail() {
     );
   }
 
+  const hasVersions = (article.version_count || 0) > 1;
+  const viewingVersion = article.version_number || null;
+  const updatedAt = article.updated_at ? new Date(article.updated_at) : null;
+  const versionCreatedAt = article.version_created_at
+    ? new Date(article.version_created_at)
+    : null;
+
   return (
     <section className="section article-detail">
       <Link className="ghost" to="/articles">
         ← Back to articles
       </Link>
+      {hasVersions && updatedAt && !viewingVersion && (
+        <p className="muted" style={{ marginTop: "0.75rem" }}>
+          Updated at: {updatedAt.toLocaleString()}
+        </p>
+      )}
+      {viewingVersion && (
+        <div className="muted" style={{ marginTop: "0.75rem" }}>
+          Viewing version {viewingVersion}
+          {versionCreatedAt ? ` (created ${versionCreatedAt.toLocaleString()})` : ""}.
+          <Link className="ghost" style={{ marginLeft: "0.75rem" }} to={`/articles/${slug}`}>
+            View latest
+          </Link>
+        </div>
+      )}
       <h1>{article.title}</h1>
       {article.summary && <p className="lead">{article.summary}</p>}
       <div
@@ -100,6 +128,23 @@ export default function ArticleDetail() {
         ref={bodyRef}
         dangerouslySetInnerHTML={{ __html: article.body }}
       />
+      {hasVersions && article.versions && article.versions.length > 0 && (
+        <div style={{ marginTop: "2rem" }}>
+          <h3>Previous versions</h3>
+          <ul>
+            {article.versions.map((v) => (
+              <li key={v.version_number}>
+                <Link
+                  className="ghost"
+                  to={`/articles/${slug}?version=${v.version_number}`}
+                >
+                  Version {v.version_number} — {new Date(v.created_at).toLocaleString()}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   );
 }

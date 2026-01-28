@@ -35,6 +35,33 @@ class Article(models.Model):
             self.published_at = timezone.now()
         super().save(*args, **kwargs)
 
+    def create_version_snapshot(self, source: str = "manual") -> "ArticleVersion":
+        return ArticleVersion.objects.create(
+            article=self,
+            title=self.title,
+            summary=self.summary,
+            body=self.body,
+            source=source,
+        )
+
+    def create_version_if_changed(self, source: str = "manual") -> bool:
+        latest = (
+            ArticleVersion.objects.filter(article=self)
+            .order_by("-version_number")
+            .first()
+        )
+        if not latest:
+            self.create_version_snapshot(source=source)
+            return True
+        if (
+            latest.title != self.title
+            or latest.summary != self.summary
+            or latest.body != self.body
+        ):
+            self.create_version_snapshot(source=source)
+            return True
+        return False
+
 
 class ArticleVersion(models.Model):
     SOURCE_CHOICES = [
