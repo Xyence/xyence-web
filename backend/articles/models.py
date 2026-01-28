@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.db.models import Max
 from django.utils import timezone
@@ -86,3 +88,295 @@ class OpenAIConfig(models.Model):
 
     def __str__(self) -> str:
         return f"OpenAI Config ({self.name})"
+
+
+class VoiceNote(models.Model):
+    STATUS_CHOICES = [
+        ("uploaded", "Uploaded"),
+        ("queued", "Queued"),
+        ("transcribing", "Transcribing"),
+        ("transcribed", "Transcribed"),
+        ("drafting", "Drafting"),
+        ("ready", "Ready"),
+        ("failed", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=200, blank=True)
+    audio_file = models.FileField(upload_to="voice_notes/")
+    mime_type = models.CharField(max_length=100, blank=True)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    language_code = models.CharField(max_length=20, default="en-US")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="uploaded")
+    job_id = models.CharField(max_length=100, blank=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="voice_notes"
+    )
+
+    def __str__(self) -> str:
+        return self.title or f"Voice note {self.id}"
+
+
+class VoiceTranscript(models.Model):
+    PROVIDER_CHOICES = [
+        ("google_stt", "Google Speech-to-Text"),
+        ("stub", "Stub"),
+    ]
+
+    voice_note = models.OneToOneField(VoiceNote, on_delete=models.CASCADE, related_name="transcript")
+    provider = models.CharField(max_length=50, choices=PROVIDER_CHOICES, default="stub")
+    transcript_text = models.TextField()
+    confidence = models.FloatField(null=True, blank=True)
+    raw_response_json = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"Transcript for {self.voice_note_id}"
+
+
+class Blueprint(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    namespace = models.CharField(max_length=120, default="core")
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="blueprints_created"
+    )
+    updated_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="blueprints_updated"
+    )
+
+    class Meta:
+        unique_together = ("name", "namespace")
+
+    def __str__(self) -> str:
+        return f"{self.namespace}.{self.name}"
+
+
+class BlueprintRevision(models.Model):
+    blueprint = models.ForeignKey(Blueprint, on_delete=models.CASCADE, related_name="revisions")
+    revision = models.PositiveIntegerField()
+    spec_json = models.JSONField()
+    blueprint_kind = models.CharField(
+        max_length=20,
+        choices=[
+            ("solution", "Solution"),
+            ("module", "Module"),
+            ("bundle", "Bundle"),
+        ],
+        default="solution",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="blueprint_revisions_created"
+    )
+
+    class Meta:
+        unique_together = ("blueprint", "revision")
+        ordering = ["-revision"]
+
+    def __str__(self) -> str:
+        return f"{self.blueprint} v{self.revision}"
+
+
+class BlueprintDraftSession(models.Model):
+    STATUS_CHOICES = [
+        ("drafting", "Drafting"),
+        ("queued", "Queued"),
+        ("ready", "Ready"),
+        ("ready_with_errors", "Ready with errors"),
+        ("published", "Published"),
+        ("archived", "Archived"),
+        ("failed", "Failed"),
+    ]
+    KIND_CHOICES = [
+        ("solution", "Solution"),
+        ("module", "Module"),
+        ("bundle", "Bundle"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=200)
+    blueprint_kind = models.CharField(max_length=20, choices=KIND_CHOICES, default="solution")
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="drafting")
+    current_draft_json = models.JSONField(null=True, blank=True)
+    requirements_summary = models.TextField(blank=True)
+    validation_errors_json = models.JSONField(null=True, blank=True)
+    suggested_fixes_json = models.JSONField(null=True, blank=True)
+    diff_summary = models.TextField(blank=True)
+    job_id = models.CharField(max_length=100, blank=True)
+    last_error = models.TextField(blank=True)
+    linked_blueprint = models.ForeignKey(
+        Blueprint, null=True, blank=True, on_delete=models.SET_NULL, related_name="draft_sessions"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="draft_sessions_created"
+    )
+    updated_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="draft_sessions_updated"
+    )
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class DraftSessionVoiceNote(models.Model):
+    draft_session = models.ForeignKey(BlueprintDraftSession, on_delete=models.CASCADE)
+    voice_note = models.ForeignKey(VoiceNote, on_delete=models.CASCADE)
+    ordering = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ("draft_session", "voice_note")
+        ordering = ["ordering"]
+
+    def __str__(self) -> str:
+        return f"{self.draft_session} -> {self.voice_note}"
+
+
+class BlueprintInstance(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("planned", "Planned"),
+        ("applied", "Applied"),
+        ("failed", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    blueprint = models.ForeignKey(Blueprint, on_delete=models.CASCADE, related_name="instances")
+    revision = models.PositiveIntegerField()
+    release_id = models.CharField(max_length=200, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    plan_id = models.CharField(max_length=100, blank=True)
+    operation_id = models.CharField(max_length=100, blank=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="blueprint_instances_created"
+    )
+
+    def __str__(self) -> str:
+        return f"{self.blueprint} -> {self.release_id or self.id}"
+
+
+class Module(models.Model):
+    STATUS_CHOICES = [
+        ("active", "Active"),
+        ("deprecated", "Deprecated"),
+        ("archived", "Archived"),
+    ]
+    TYPE_CHOICES = [
+        ("adapter", "Adapter"),
+        ("service", "Service"),
+        ("ui", "UI"),
+        ("workflow", "Workflow"),
+        ("schema", "Schema"),
+        ("infra", "Infra"),
+        ("lib", "Lib"),
+    ]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    namespace = models.CharField(max_length=120)
+    name = models.CharField(max_length=120)
+    fqn = models.CharField(max_length=240, unique=True)
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    current_version = models.CharField(max_length=64)
+    latest_module_spec_json = models.JSONField(null=True, blank=True)
+    capabilities_provided_json = models.JSONField(null=True, blank=True)
+    interfaces_json = models.JSONField(null=True, blank=True)
+    dependencies_json = models.JSONField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="active")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="modules_created"
+    )
+    updated_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="modules_updated"
+    )
+
+    class Meta:
+        unique_together = ("namespace", "name")
+        ordering = ["namespace", "name"]
+
+    def __str__(self) -> str:
+        return self.fqn
+
+
+class Bundle(models.Model):
+    STATUS_CHOICES = [
+        ("active", "Active"),
+        ("deprecated", "Deprecated"),
+        ("archived", "Archived"),
+    ]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    namespace = models.CharField(max_length=120)
+    name = models.CharField(max_length=120)
+    fqn = models.CharField(max_length=240, unique=True)
+    current_version = models.CharField(max_length=64)
+    bundle_spec_json = models.JSONField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="active")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="bundles_created"
+    )
+    updated_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="bundles_updated"
+    )
+
+    class Meta:
+        unique_together = ("namespace", "name")
+        ordering = ["namespace", "name"]
+
+    def __str__(self) -> str:
+        return self.fqn
+
+
+class Capability(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=200, unique=True)
+    version = models.CharField(max_length=64, default="1.0")
+    profiles_json = models.JSONField(null=True, blank=True)
+    capability_spec_json = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return f"{self.name} v{self.version}"
+
+
+class ReleasePlan(models.Model):
+    TARGET_CHOICES = [
+        ("module", "Module"),
+        ("bundle", "Bundle"),
+        ("release", "Release"),
+    ]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=200)
+    target_kind = models.CharField(max_length=20, choices=TARGET_CHOICES)
+    target_fqn = models.CharField(max_length=240)
+    from_version = models.CharField(max_length=64, blank=True)
+    to_version = models.CharField(max_length=64)
+    milestones_json = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="release_plans_created"
+    )
+    updated_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="release_plans_updated"
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.target_kind}:{self.target_fqn} {self.from_version}->{self.to_version}"

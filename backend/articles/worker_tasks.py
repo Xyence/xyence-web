@@ -1,0 +1,209 @@
+import json
+import os
+import tempfile
+from typing import Any, Dict, List, Optional
+
+import requests
+from jsonschema import Draft202012Validator
+
+
+INTERNAL_BASE_URL = os.environ.get("XYENCE_INTERNAL_BASE_URL", "http://backend:8000").rstrip("/")
+INTERNAL_TOKEN = os.environ.get("XYENCE_INTERNAL_TOKEN", "").strip()
+CONTRACTS_ROOT = os.environ.get("XYNSEED_CONTRACTS_ROOT", "/xyn-contracts")
+
+
+def _headers() -> Dict[str, str]:
+    return {"X-Internal-Token": INTERNAL_TOKEN}
+
+
+def _get_json(path: str) -> Dict[str, Any]:
+    response = requests.get(f"{INTERNAL_BASE_URL}{path}", headers=_headers(), timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def _post_json(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    response = requests.post(
+        f"{INTERNAL_BASE_URL}{path}",
+        headers={**_headers(), "Content-Type": "application/json"},
+        json=payload,
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _download_file(path: str) -> bytes:
+    response = requests.get(f"{INTERNAL_BASE_URL}{path}", headers=_headers(), timeout=60)
+    response.raise_for_status()
+    return response.content
+
+
+def _transcribe_audio(content: bytes, language_code: str) -> Dict[str, Any]:
+    from google.cloud import speech  # type: ignore
+
+    client = speech.SpeechClient()
+    audio = speech.RecognitionAudio(content=content)
+    config = speech.RecognitionConfig(
+        language_code=language_code,
+        enable_automatic_punctuation=True,
+    )
+    response = client.recognize(config=config, audio=audio)
+    transcripts = []
+    confidences = []
+    for result in response.results:
+        if result.alternatives:
+            transcripts.append(result.alternatives[0].transcript)
+            confidences.append(result.alternatives[0].confidence)
+    transcript_text = "\n".join(transcripts).strip()
+    confidence = sum(confidences) / len(confidences) if confidences else None
+    return {
+        "transcript_text": transcript_text,
+        "confidence": confidence,
+        "raw_response_json": {"results": [r.to_dict() for r in response.results]},
+    }
+
+
+def _load_schema(name: str) -> Dict[str, Any]:
+    path = os.path.join(CONTRACTS_ROOT, "schemas", name)
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _schema_for_kind(kind: str) -> str:
+    mapping = {
+        "solution": "SolutionBlueprintSpec.schema.json",
+        "module": "ModuleSpec.schema.json",
+        "bundle": "BundleSpec.schema.json",
+    }
+    return mapping.get(kind, "SolutionBlueprintSpec.schema.json")
+
+
+def _validate_blueprint(spec: Dict[str, Any], kind: str) -> List[str]:
+    schema = _load_schema(_schema_for_kind(kind))
+    validator = Draft202012Validator(schema)
+    errors = []
+    for error in sorted(validator.iter_errors(spec), key=lambda e: e.path):
+        path = ".".join(str(p) for p in error.path) if error.path else "root"
+        errors.append(f"{path}: {error.message}")
+    return errors
+
+
+def _openai_generate_blueprint(transcript: str, kind: str) -> Optional[Dict[str, Any]]:
+    try:
+        config = _get_json("/xyn/internal/openai-config")
+        api_key = config.get("api_key")
+        model = config.get("model")
+        if not api_key or not model:
+            return None
+    except Exception:
+        return None
+    from openai import OpenAI  # type: ignore
+
+    client = OpenAI(api_key=api_key)
+    if kind == "module":
+        system_prompt = (
+            "You are generating a ModuleSpec JSON for Xyn. "
+            "Return ONLY valid JSON matching ModuleSpec schema. "
+            "Use apiVersion xyn.module/v1."
+        )
+    elif kind == "bundle":
+        system_prompt = (
+            "You are generating a BundleSpec JSON for Xyn. "
+            "Return ONLY valid JSON matching BundleSpec schema. "
+            "Use apiVersion xyn.bundle/v1."
+        )
+    else:
+        system_prompt = (
+            "You are generating a SolutionBlueprintSpec JSON for Xyn. "
+            "Return ONLY valid JSON matching SolutionBlueprintSpec schema. "
+            "Use apiVersion xyn.blueprint/v1 and include releaseSpec."
+        )
+    response = client.responses.create(
+        model=model,
+        input=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": transcript},
+        ],
+    )
+    try:
+        return json.loads(response.output_text)
+    except json.JSONDecodeError:
+        return None
+
+
+def transcribe_voice_note(voice_note_id: str) -> None:
+    try:
+        _post_json(f"/xyn/internal/voice-notes/{voice_note_id}/status", {"status": "transcribing"})
+        meta = _get_json(f"/xyn/internal/voice-notes/{voice_note_id}")
+        if meta.get("transcript"):
+            return
+        audio = _download_file(f"/xyn/internal/voice-notes/{voice_note_id}/audio")
+        payload = _transcribe_audio(audio, meta.get("language_code", "en-US"))
+        _post_json(
+            f"/xyn/internal/voice-notes/{voice_note_id}/transcript",
+            {"provider": "google_stt", **payload},
+        )
+    except Exception as exc:
+        _post_json(
+            f"/xyn/internal/voice-notes/{voice_note_id}/error",
+            {"error": str(exc)},
+        )
+
+
+def generate_blueprint_draft(session_id: str) -> None:
+    try:
+        _post_json(f"/xyn/internal/draft-sessions/{session_id}/status", {"status": "drafting"})
+        payload = _get_json(f"/xyn/internal/draft-sessions/{session_id}")
+        kind = payload.get("blueprint_kind", "solution")
+        transcripts = payload.get("transcripts", [])
+        combined = "\n".join(transcripts)
+        draft = _openai_generate_blueprint(combined, kind) if combined else None
+        if not draft:
+            draft = payload.get("draft") or {}
+        errors = _validate_blueprint(draft, kind) if draft else ["Draft generation failed"]
+        status = "ready" if not errors else "ready_with_errors"
+        _post_json(
+            f"/xyn/internal/draft-sessions/{session_id}/draft",
+            {
+                "draft_json": draft,
+                "requirements_summary": combined[:2000],
+                "validation_errors": errors,
+                "suggested_fixes": [],
+                "diff_summary": "Generated from transcript",
+                "status": status,
+            },
+        )
+    except Exception as exc:
+        _post_json(
+            f"/xyn/internal/draft-sessions/{session_id}/error",
+            {"error": str(exc)},
+        )
+
+
+def revise_blueprint_draft(session_id: str, instruction: str) -> None:
+    try:
+        _post_json(f"/xyn/internal/draft-sessions/{session_id}/status", {"status": "drafting"})
+        payload = _get_json(f"/xyn/internal/draft-sessions/{session_id}")
+        kind = payload.get("blueprint_kind", "solution")
+        base_summary = payload.get("requirements_summary", "")
+        combined = (base_summary + "\n" + instruction).strip()
+        draft = _openai_generate_blueprint(combined, kind) or payload.get("draft") or {}
+        errors = _validate_blueprint(draft, kind) if draft else ["Revision failed"]
+        status = "ready" if not errors else "ready_with_errors"
+        _post_json(
+            f"/xyn/internal/draft-sessions/{session_id}/draft",
+            {
+                "draft_json": draft,
+                "requirements_summary": combined[:2000],
+                "validation_errors": errors,
+                "suggested_fixes": [],
+                "diff_summary": f"Instruction: {instruction}",
+                "status": status,
+            },
+        )
+    except Exception as exc:
+        _post_json(
+            f"/xyn/internal/draft-sessions/{session_id}/error",
+            {"error": str(exc)},
+        )

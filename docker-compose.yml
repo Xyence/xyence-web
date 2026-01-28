@@ -1,4 +1,8 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
   db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -21,13 +25,21 @@ services:
       POSTGRES_HOST: db
       XYNSEED_BASE_URL: ${XYNSEED_BASE_URL:-http://host.docker.internal:8001/api/v1}
       XYNSEED_API_TOKEN: ${XYNSEED_API_TOKEN:-}
+      XYNSEED_CONTRACTS_ROOT: /xyn-contracts
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcp-speech.json
+      XYENCE_ASYNC_JOBS_MODE: ${XYENCE_ASYNC_JOBS_MODE:-redis}
+      XYENCE_JOBS_REDIS_URL: ${XYENCE_JOBS_REDIS_URL:-redis://redis:6379/0}
+      XYENCE_INTERNAL_TOKEN: ${XYENCE_INTERNAL_TOKEN:-change-me}
     depends_on:
       - db
+      - redis
     ports:
       - "8000:8000"
     volumes:
       - backend_media:/app/media
       - backend_static:/app/staticfiles
+      - /home/ubuntu/src/xyn-contracts:/xyn-contracts:ro
+      - /home/ubuntu/central-xyence-io-9d049e62e994.json:/secrets/gcp-speech.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -39,6 +51,26 @@ services:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
     ports:
       - "8080:80"
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      XYNSEED_CONTRACTS_ROOT: /xyn-contracts
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcp-speech.json
+      XYENCE_JOBS_REDIS_URL: ${XYENCE_JOBS_REDIS_URL:-redis://redis:6379/0}
+      XYENCE_INTERNAL_BASE_URL: http://backend:8000
+      XYENCE_INTERNAL_TOKEN: ${XYENCE_INTERNAL_TOKEN:-change-me}
+    depends_on:
+      - redis
+      - backend
+    command: python -m articles.worker
+    volumes:
+      - /home/ubuntu/src/xyn-contracts:/xyn-contracts:ro
+      - /home/ubuntu/central-xyence-io-9d049e62e994.json:/secrets/gcp-speech.json:ro
 
 volumes:
   postgres_data:

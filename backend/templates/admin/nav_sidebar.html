@@ -93,6 +93,42 @@
               <td></td>
               <td></td>
             </tr>
+            <tr class="model-ai-studio{% if '/xyn/blueprints/' in request.path or '/xyn/studio/blueprints/' in request.path %} current-model{% endif %}">
+              <th scope="row" id="ai-studio-blueprints">
+                <a href="/xyn/blueprints/"{% if '/xyn/blueprints/' in request.path or '/xyn/studio/blueprints/' in request.path %} aria-current="page"{% endif %}>
+                  {% translate 'Blueprint Studio' %}
+                </a>
+              </th>
+              <td></td>
+              <td></td>
+            </tr>
+            <tr class="model-ai-studio{% if '/xyn/modules/' in request.path %} current-model{% endif %}">
+              <th scope="row" id="ai-studio-modules">
+                <a href="/xyn/modules/"{% if '/xyn/modules/' in request.path %} aria-current="page"{% endif %}>
+                  {% translate 'Module Registry' %}
+                </a>
+              </th>
+              <td></td>
+              <td></td>
+            </tr>
+            <tr class="model-ai-studio{% if '/xyn/bundles/' in request.path %} current-model{% endif %}">
+              <th scope="row" id="ai-studio-bundles">
+                <a href="/xyn/bundles/"{% if '/xyn/bundles/' in request.path %} aria-current="page"{% endif %}>
+                  {% translate 'Bundle Registry' %}
+                </a>
+              </th>
+              <td></td>
+              <td></td>
+            </tr>
+            <tr class="model-ai-studio{% if '/xyn/capabilities/' in request.path %} current-model{% endif %}">
+              <th scope="row" id="ai-studio-capabilities">
+                <a href="/xyn/capabilities/"{% if '/xyn/capabilities/' in request.path %} aria-current="page"{% endif %}>
+                  {% translate 'Capability Catalog' %}
+                </a>
+              </th>
+              <td></td>
+              <td></td>
+            </tr>
           </table>
         </div>
 

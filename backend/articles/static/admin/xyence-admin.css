@@ -46,6 +46,106 @@ html[data-theme="dark"] #header {
   box-shadow: 0 14px 32px rgba(5, 10, 18, 0.45);
 }
 
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] body {
+    background: #0e141b;
+  }
+
+  html[data-theme="auto"] #header {
+    background: linear-gradient(135deg, #0f2d4f, #112840);
+    box-shadow: 0 14px 32px rgba(5, 10, 18, 0.45);
+  }
+
+  html[data-theme="auto"] #content-main .module,
+  html[data-theme="auto"] #content-related .module {
+    background: #141b24;
+    color: #e4e9f0;
+  }
+
+  html[data-theme="auto"] #nav-sidebar {
+    background: #0f141b;
+  }
+
+  html[data-theme="auto"] #nav-sidebar .module caption,
+  html[data-theme="auto"] #nav-sidebar .module th,
+  html[data-theme="auto"] #nav-sidebar .module td {
+    color: #d6dbe3;
+  }
+
+  html[data-theme="auto"] #nav-sidebar .module caption {
+    background: #163456;
+  }
+
+  html[data-theme="auto"] #nav-sidebar .nav-subheading th {
+    background: #141f2b;
+    color: #9fb0c3;
+    border-top: 1px solid #233246;
+  }
+
+  html[data-theme="auto"] #nav-filter {
+    background: #111822;
+    border-color: #223146;
+    color: #e2e8f0;
+  }
+
+  html[data-theme="auto"] .ck-editor__editable,
+  html[data-theme="auto"] .ck.ck-editor__editable,
+  html[data-theme="auto"] .ck.ck-editor__editable_inline {
+    background: #0f141b;
+    color: #e4e9f0;
+    border-color: #223146;
+  }
+
+  html[data-theme="auto"] .ck.ck-toolbar {
+    background: #121a24;
+    border-color: #223146;
+  }
+
+  html[data-theme="auto"] .ck.ck-toolbar .ck-button,
+  html[data-theme="auto"] .ck.ck-toolbar .ck-dropdown__button {
+    color: #f2f6fb;
+  }
+
+  html[data-theme="auto"] .ck.ck-toolbar .ck-button .ck-icon,
+  html[data-theme="auto"] .ck.ck-toolbar .ck-dropdown__button .ck-icon {
+    color: #f2f6fb;
+    filter: none;
+    opacity: 1;
+  }
+
+  html[data-theme="auto"] .ck.ck-toolbar .ck-button:not(.ck-disabled):hover,
+  html[data-theme="auto"] .ck.ck-toolbar .ck-button:not(.ck-disabled):focus,
+  html[data-theme="auto"] .ck.ck-toolbar .ck-dropdown__button:not(.ck-disabled):hover,
+  html[data-theme="auto"] .ck.ck-toolbar .ck-dropdown__button:not(.ck-disabled):focus {
+    background: #1b2735;
+  }
+
+  html[data-theme="auto"] .ck.ck-toolbar .ck-button.ck-on,
+  html[data-theme="auto"] .ck.ck-toolbar .ck-dropdown__button.ck-on {
+    background: #243449;
+    color: #f2f6fb;
+  }
+
+  html[data-theme="auto"] .ck.ck-editor .ck-dropdown__panel,
+  html[data-theme="auto"] .ck.ck-editor .ck-list {
+    background: #121a24;
+    border-color: #223146;
+    color: #e4e9f0;
+  }
+
+  html[data-theme="auto"] .ck.ck-editor .ck-list__item .ck-button {
+    background: transparent;
+    color: #e4e9f0;
+  }
+
+  html[data-theme="auto"] .ck.ck-editor .ck-list__item .ck-button:hover,
+  html[data-theme="auto"] .ck.ck-editor .ck-list__item .ck-button:focus,
+  html[data-theme="auto"] .ck.ck-editor .ck-list__item .ck-button.ck-on {
+    background: #1b2735;
+    color: #f2f6fb;
+  }
+}
+
 html[data-theme="dark"] #content-main .module,
 html[data-theme="dark"] #content-related .module {
   background: #141b24;
@@ -352,6 +452,16 @@ div.breadcrumbs a {
 
 #nav-sidebar table {
   width: 100%;
+}
+
+@media (max-width: 768px) {
+  .dashboard #content-main .module {
+    overflow-x: auto;
+  }
+
+  .dashboard #content-main .module table {
+    min-width: 520px;
+  }
 }
 
 /* Hide sidebar column on login page (permission panel/filter bar). */

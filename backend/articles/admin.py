@@ -14,7 +14,22 @@ from allauth.account.models import EmailAddress, EmailConfirmation
 from django.contrib.sites.models import Site
 
 from .ai import generate_article_draft
-from .models import Article, ArticleVersion, OpenAIConfig
+from .models import (
+    Article,
+    ArticleVersion,
+    Blueprint,
+    BlueprintDraftSession,
+    BlueprintInstance,
+    BlueprintRevision,
+    Bundle,
+    Capability,
+    DraftSessionVoiceNote,
+    Module,
+    OpenAIConfig,
+    ReleasePlan,
+    VoiceNote,
+    VoiceTranscript,
+)
 
 
 class ArticleVersionInline(admin.TabularInline):
@@ -67,6 +82,72 @@ class OpenAIConfigAdmin(admin.ModelAdmin):
         form = super().get_form(request, obj, **kwargs)
         form.base_fields["api_key"].widget = forms.PasswordInput(render_value=True)
         return form
+
+
+@admin.register(Blueprint)
+class BlueprintAdmin(admin.ModelAdmin):
+    list_display = ("namespace", "name", "created_at", "updated_at")
+    search_fields = ("name", "namespace")
+
+
+@admin.register(BlueprintRevision)
+class BlueprintRevisionAdmin(admin.ModelAdmin):
+    list_display = ("blueprint", "revision", "blueprint_kind", "created_at")
+    search_fields = ("blueprint__name",)
+
+
+@admin.register(BlueprintDraftSession)
+class BlueprintDraftSessionAdmin(admin.ModelAdmin):
+    list_display = ("name", "blueprint_kind", "status", "job_id", "updated_at")
+    search_fields = ("name",)
+
+
+@admin.register(DraftSessionVoiceNote)
+class DraftSessionVoiceNoteAdmin(admin.ModelAdmin):
+    list_display = ("draft_session", "voice_note", "ordering")
+
+
+@admin.register(VoiceNote)
+class VoiceNoteAdmin(admin.ModelAdmin):
+    list_display = ("title", "status", "job_id", "created_at")
+    search_fields = ("title",)
+
+
+@admin.register(VoiceTranscript)
+class VoiceTranscriptAdmin(admin.ModelAdmin):
+    list_display = ("voice_note", "provider", "created_at")
+
+
+@admin.register(BlueprintInstance)
+class BlueprintInstanceAdmin(admin.ModelAdmin):
+    list_display = ("blueprint", "revision", "status", "created_at")
+
+
+@admin.register(Module)
+class ModuleAdmin(admin.ModelAdmin):
+    list_display = ("fqn", "type", "current_version", "status", "updated_at")
+    search_fields = ("name", "namespace", "fqn")
+    list_filter = ("type", "status")
+
+
+@admin.register(Bundle)
+class BundleAdmin(admin.ModelAdmin):
+    list_display = ("fqn", "current_version", "status", "updated_at")
+    search_fields = ("name", "namespace", "fqn")
+    list_filter = ("status",)
+
+
+@admin.register(Capability)
+class CapabilityAdmin(admin.ModelAdmin):
+    list_display = ("name", "version", "updated_at")
+    search_fields = ("name",)
+
+
+@admin.register(ReleasePlan)
+class ReleasePlanAdmin(admin.ModelAdmin):
+    list_display = ("name", "target_kind", "target_fqn", "from_version", "to_version", "updated_at")
+    search_fields = ("name", "target_fqn")
+    list_filter = ("target_kind",)
 
 
 

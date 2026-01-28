@@ -1,0 +1,1064 @@
+import json
+import os
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from django.db import models
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.http import FileResponse, HttpRequest, HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.utils.text import slugify
+from django.views.decorators.csrf import csrf_exempt
+from jsonschema import Draft202012Validator
+
+from .services import (
+    generate_blueprint_draft,
+    revise_blueprint_draft,
+    transcribe_voice_note,
+)
+from .models import (
+    Blueprint,
+    BlueprintDraftSession,
+    BlueprintInstance,
+    BlueprintRevision,
+    Bundle,
+    Capability,
+    DraftSessionVoiceNote,
+    Module,
+    VoiceNote,
+    VoiceTranscript,
+)
+
+_executor = ThreadPoolExecutor(max_workers=2)
+
+
+def _async_mode() -> str:
+    mode = os.environ.get("XYENCE_ASYNC_JOBS_MODE", "").strip().lower()
+    if mode:
+        return mode
+    return "inprocess" if os.environ.get("DJANGO_DEBUG", "false").lower() == "true" else "redis"
+
+
+def _require_staff(request: HttpRequest) -> Optional[JsonResponse]:
+    if not request.user.is_authenticated or not request.user.is_staff:
+        return JsonResponse({"error": "Staff access required"}, status=403)
+    return None
+
+
+def _require_internal_token(request: HttpRequest) -> Optional[JsonResponse]:
+    expected = os.environ.get("XYENCE_INTERNAL_TOKEN", "").strip()
+    if not expected:
+        return JsonResponse({"error": "Internal token not configured"}, status=500)
+    provided = request.headers.get("X-Internal-Token", "").strip()
+    if provided != expected:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+    return None
+
+
+def _enqueue_job(func_path: str, *args) -> str:
+    import redis
+    from rq import Queue
+
+    redis_url = os.environ.get("XYENCE_JOBS_REDIS_URL", "redis://redis:6379/0")
+    queue = Queue("default", connection=redis.Redis.from_url(redis_url))
+    job = queue.enqueue(func_path, *args, job_timeout=900)
+    return job.id
+
+def _xynseed_request(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    import requests
+
+    base_url = os.environ.get("XYNSEED_BASE_URL", "http://localhost:8001/api/v1").rstrip("/")
+    token = os.environ.get("XYNSEED_API_TOKEN", "").strip()
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = requests.request(
+        method=method,
+        url=f"{base_url}{path}",
+        json=payload,
+        headers=headers,
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _contracts_root() -> Optional[Path]:
+    if env_root := os.environ.get("XYNSEED_CONTRACTS_ROOT", "").strip():
+        candidate = Path(env_root)
+        if candidate.exists():
+            return candidate
+    root = Path(__file__).resolve()
+    for parent in root.parents:
+        candidate = parent / "xyn-contracts"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_schema(schema_name: str) -> Dict[str, Any]:
+    root = _contracts_root()
+    if not root:
+        raise FileNotFoundError("xyn-contracts not found")
+    schema_path = root / "schemas" / schema_name
+    return json.loads(schema_path.read_text())
+
+
+def _schema_for_kind(kind: str) -> str:
+    mapping = {
+        "solution": "SolutionBlueprintSpec.schema.json",
+        "module": "ModuleSpec.schema.json",
+        "bundle": "BundleSpec.schema.json",
+    }
+    return mapping.get(kind, "SolutionBlueprintSpec.schema.json")
+
+
+def _validate_blueprint_spec(spec: Dict[str, Any], kind: str = "solution") -> List[str]:
+    schema = _load_schema(_schema_for_kind(kind))
+    validator = Draft202012Validator(schema)
+    errors = []
+    for error in sorted(validator.iter_errors(spec), key=lambda e: e.path):
+        path = ".".join(str(p) for p in error.path) if error.path else "root"
+        errors.append(f"{path}: {error.message}")
+    return errors
+
+
+def _load_runner_release_spec() -> Optional[Dict[str, Any]]:
+    root = _contracts_root()
+    if not root:
+        return None
+    fixture = root / "fixtures" / "runner.release.json"
+    if not fixture.exists():
+        return None
+    return json.loads(fixture.read_text())
+
+
+def _generate_blueprint_spec(session: BlueprintDraftSession, transcripts: List[str]) -> Dict[str, Any]:
+    release_spec = _load_runner_release_spec()
+    name = slugify(session.name) or "blueprint"
+    spec = {
+        "apiVersion": "xyn.blueprint/v1",
+        "kind": "Blueprint",
+        "metadata": {
+            "name": name,
+            "namespace": "core",
+            "labels": {"source": "voice"}
+        },
+        "description": session.requirements_summary or "",
+        "releaseSpec": release_spec or {}
+    }
+    if transcripts:
+        spec["requirements"] = transcripts
+    return spec
+
+
+def _module_from_spec(spec: Dict[str, Any], user) -> Module:
+    metadata = spec.get("metadata", {})
+    module_spec = spec.get("module", {})
+    namespace = metadata.get("namespace", "core")
+    name = metadata.get("name", "module")
+    fqn = module_spec.get("fqn") or f"{namespace}.{module_spec.get('type','module')}.{name}"
+    module, created = Module.objects.get_or_create(
+        fqn=fqn,
+        defaults={
+            "namespace": namespace,
+            "name": name,
+            "type": module_spec.get("type", "service"),
+            "current_version": metadata.get("version", "0.1.0"),
+            "latest_module_spec_json": spec,
+            "capabilities_provided_json": module_spec.get("capabilitiesProvided", []),
+            "interfaces_json": module_spec.get("interfaces", {}),
+            "dependencies_json": module_spec.get("dependencies", {}),
+            "created_by": user,
+            "updated_by": user,
+        },
+    )
+    if not created:
+        module.namespace = namespace
+        module.name = name
+        module.type = module_spec.get("type", module.type)
+        module.current_version = metadata.get("version", module.current_version)
+        module.latest_module_spec_json = spec
+        module.capabilities_provided_json = module_spec.get("capabilitiesProvided", [])
+        module.interfaces_json = module_spec.get("interfaces", {})
+        module.dependencies_json = module_spec.get("dependencies", {})
+        module.updated_by = user
+        module.save(
+            update_fields=[
+                "namespace",
+                "name",
+                "type",
+                "current_version",
+                "latest_module_spec_json",
+                "capabilities_provided_json",
+                "interfaces_json",
+                "dependencies_json",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+    return module
+
+
+def _bundle_from_spec(spec: Dict[str, Any], user) -> Bundle:
+    metadata = spec.get("metadata", {})
+    namespace = metadata.get("namespace", "core")
+    name = metadata.get("name", "bundle")
+    fqn = spec.get("bundleFqn") or f"{namespace}.bundle.{name}"
+    bundle, created = Bundle.objects.get_or_create(
+        fqn=fqn,
+        defaults={
+            "namespace": namespace,
+            "name": name,
+            "current_version": metadata.get("version", "0.1.0"),
+            "bundle_spec_json": spec,
+            "created_by": user,
+            "updated_by": user,
+        },
+    )
+    if not created:
+        bundle.namespace = namespace
+        bundle.name = name
+        bundle.current_version = metadata.get("version", bundle.current_version)
+        bundle.bundle_spec_json = spec
+        bundle.updated_by = user
+        bundle.save(
+            update_fields=[
+                "namespace",
+                "name",
+                "current_version",
+                "bundle_spec_json",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+    return bundle
+
+
+def _capability_from_spec(spec: Dict[str, Any], user=None) -> Capability:
+    metadata = spec.get("metadata", {})
+    name = metadata.get("name", "capability")
+    version = metadata.get("version", "1.0")
+    capability, created = Capability.objects.get_or_create(
+        name=name,
+        defaults={
+            "version": version,
+            "profiles_json": spec.get("profiles", []),
+            "capability_spec_json": spec,
+        },
+    )
+    if not created:
+        capability.version = version
+        capability.profiles_json = spec.get("profiles", [])
+        capability.capability_spec_json = spec
+        capability.save(update_fields=["version", "profiles_json", "capability_spec_json", "updated_at"])
+    return capability
+
+
+def _update_session_from_draft(
+    session: BlueprintDraftSession,
+    draft_json: Dict[str, Any],
+    requirements_summary: str,
+    validation_errors: List[str],
+    suggested_fixes: Optional[List[str]] = None,
+) -> None:
+    session.current_draft_json = draft_json
+    session.requirements_summary = requirements_summary
+    session.validation_errors_json = validation_errors or []
+    session.suggested_fixes_json = suggested_fixes or []
+    session.status = "ready" if not validation_errors else "ready_with_errors"
+    session.save(update_fields=[
+        "current_draft_json",
+        "requirements_summary",
+        "validation_errors_json",
+        "suggested_fixes_json",
+        "status",
+        "updated_at",
+    ])
+
+
+@login_required
+def blueprint_list_view(request: HttpRequest) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    blueprints = Blueprint.objects.all().order_by("namespace", "name")
+    draft_sessions = BlueprintDraftSession.objects.all().order_by("-updated_at")
+    modules = Module.objects.all().order_by("namespace", "name")
+    bundles = Bundle.objects.all().order_by("namespace", "name")
+    capabilities = Capability.objects.all().order_by("name")
+    return render(
+        request,
+        "xyn/blueprints_list.html",
+        {
+            "blueprints": blueprints,
+            "draft_sessions": draft_sessions,
+            "modules": modules,
+            "bundles": bundles,
+            "capabilities": capabilities,
+        },
+    )
+
+
+@login_required
+def new_draft_session_view(request: HttpRequest) -> HttpResponse:
+    if request.method == "POST":
+        name = request.POST.get("name") or f"Blueprint draft {uuid.uuid4()}"
+        blueprint_kind = request.POST.get("blueprint_kind", "solution")
+        session = BlueprintDraftSession.objects.create(
+            name=name,
+            blueprint_kind=blueprint_kind,
+            created_by=request.user,
+            updated_by=request.user,
+        )
+        return redirect("blueprint-studio", session_id=session.id)
+    return redirect("blueprint-list")
+
+
+@login_required
+def blueprint_detail_view(request: HttpRequest, blueprint_id: str) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    blueprint = get_object_or_404(Blueprint, id=blueprint_id)
+    revisions = blueprint.revisions.all()
+    instances = blueprint.instances.all().order_by("-created_at")
+    return render(
+        request,
+        "xyn/blueprint_detail.html",
+        {"blueprint": blueprint, "revisions": revisions, "instances": instances},
+    )
+
+
+@login_required
+def module_list_view(request: HttpRequest) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    modules = Module.objects.all().order_by("namespace", "name")
+    return render(request, "xyn/modules_list.html", {"modules": modules})
+
+
+@login_required
+def module_detail_view(request: HttpRequest, module_id: str) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    module = get_object_or_404(Module, id=module_id)
+    return render(request, "xyn/module_detail.html", {"module": module})
+
+
+@login_required
+def bundle_list_view(request: HttpRequest) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    bundles = Bundle.objects.all().order_by("namespace", "name")
+    return render(request, "xyn/bundles_list.html", {"bundles": bundles})
+
+
+@login_required
+def bundle_detail_view(request: HttpRequest, bundle_id: str) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    bundle = get_object_or_404(Bundle, id=bundle_id)
+    return render(request, "xyn/bundle_detail.html", {"bundle": bundle})
+
+
+@login_required
+def capability_list_view(request: HttpRequest) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    capabilities = Capability.objects.all().order_by("name")
+    return render(request, "xyn/capabilities_list.html", {"capabilities": capabilities})
+
+
+@login_required
+def capability_detail_view(request: HttpRequest, capability_id: str) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    capability = get_object_or_404(Capability, id=capability_id)
+    return render(request, "xyn/capability_detail.html", {"capability": capability})
+
+
+@csrf_exempt
+@login_required
+def instantiate_blueprint(request: HttpRequest, blueprint_id: str) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    if staff_error := _require_staff(request):
+        return staff_error
+    blueprint = get_object_or_404(Blueprint, id=blueprint_id)
+    latest_revision = blueprint.revisions.order_by("-revision").first()
+    if not latest_revision:
+        return JsonResponse({"error": "No revisions available"}, status=400)
+    spec = latest_revision.spec_json
+    release_spec = spec.get("releaseSpec")
+    if not release_spec:
+        return JsonResponse({"error": "Blueprint missing releaseSpec"}, status=400)
+    mode = request.POST.get("mode", "apply")
+    instance = BlueprintInstance.objects.create(
+        blueprint=blueprint,
+        revision=latest_revision.revision,
+        created_by=request.user,
+    )
+    try:
+        plan = _xynseed_request("post", "/releases/plan", {"release_spec": release_spec})
+        op = None
+        if mode == "apply":
+            op = _xynseed_request(
+                "post",
+                "/releases/apply",
+                {"release_id": plan.get("releaseId"), "plan_id": plan.get("planId")},
+            )
+        instance.plan_id = plan.get("planId", "")
+        instance.release_id = plan.get("releaseId", "")
+        if op:
+            instance.operation_id = op.get("operationId", "")
+            instance.status = "applied" if op.get("status") == "succeeded" else "failed"
+        else:
+            instance.status = "planned"
+    except Exception as exc:
+        instance.status = "failed"
+        instance.error = str(exc)
+    instance.save(update_fields=["plan_id", "operation_id", "release_id", "status", "error"])
+    return JsonResponse({"instance_id": str(instance.id), "status": instance.status})
+
+
+@login_required
+def blueprint_studio_view(request: HttpRequest, session_id: str) -> HttpResponse:
+    if not request.user.is_staff:
+        return HttpResponse(status=403)
+    session = get_object_or_404(BlueprintDraftSession, id=session_id)
+    voice_notes = VoiceNote.objects.filter(draftsessionvoicenote__draft_session=session).order_by(
+        "draftsessionvoicenote__ordering"
+    )
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "save_draft":
+            raw_json = request.POST.get("draft_json", "")
+            try:
+                draft_json = json.loads(raw_json)
+            except json.JSONDecodeError as exc:
+                messages.error(request, f"Draft JSON invalid: {exc}")
+            else:
+                errors = _validate_blueprint_spec(draft_json, session.blueprint_kind)
+                _update_session_from_draft(
+                    session,
+                    draft_json,
+                    session.requirements_summary,
+                    errors,
+                    suggested_fixes=[],
+                )
+                messages.success(request, "Draft saved.")
+        elif action == "publish":
+            draft = session.current_draft_json
+            if not draft:
+                messages.error(request, "No draft to publish.")
+            else:
+                errors = _validate_blueprint_spec(draft, session.blueprint_kind)
+                if errors:
+                    messages.error(request, "Draft has validation errors; fix before publishing.")
+                else:
+                    kind = session.blueprint_kind
+                    if kind == "solution":
+                        blueprint, created = Blueprint.objects.get_or_create(
+                            name=draft["metadata"]["name"],
+                            namespace=draft["metadata"].get("namespace", "core"),
+                            defaults={
+                                "description": draft.get("description", ""),
+                                "created_by": request.user,
+                                "updated_by": request.user,
+                            },
+                        )
+                        if not created:
+                            blueprint.description = draft.get("description", blueprint.description)
+                            blueprint.updated_by = request.user
+                            blueprint.save(update_fields=["description", "updated_by", "updated_at"])
+                        next_rev = (blueprint.revisions.aggregate(max_rev=models.Max("revision")).get("max_rev") or 0) + 1
+                        BlueprintRevision.objects.create(
+                            blueprint=blueprint,
+                            revision=next_rev,
+                            spec_json=draft,
+                            blueprint_kind=kind,
+                            created_by=request.user,
+                        )
+                        session.linked_blueprint = blueprint
+                        session.status = "published"
+                        session.save(update_fields=["linked_blueprint", "status", "updated_at"])
+                        messages.success(request, "Blueprint published.")
+                        return redirect("blueprint-detail", blueprint_id=blueprint.id)
+                    if kind == "module":
+                        metadata = draft.get("metadata", {})
+                        module_spec = draft.get("module", {})
+                        namespace = metadata.get("namespace", "core")
+                        name = metadata.get("name", "module")
+                        fqn = module_spec.get("fqn") or f"{namespace}.{module_spec.get('type','module')}.{name}"
+                        module, created = Module.objects.get_or_create(
+                            fqn=fqn,
+                            defaults={
+                                "namespace": namespace,
+                                "name": name,
+                                "type": module_spec.get("type", "service"),
+                                "current_version": metadata.get("version", "0.1.0"),
+                                "latest_module_spec_json": draft,
+                                "capabilities_provided_json": module_spec.get("capabilitiesProvided", []),
+                                "interfaces_json": module_spec.get("interfaces", {}),
+                                "dependencies_json": module_spec.get("dependencies", {}),
+                                "created_by": request.user,
+                                "updated_by": request.user,
+                            },
+                        )
+                        if not created:
+                            module.namespace = namespace
+                            module.name = name
+                            module.type = module_spec.get("type", module.type)
+                            module.current_version = metadata.get("version", module.current_version)
+                            module.latest_module_spec_json = draft
+                            module.capabilities_provided_json = module_spec.get("capabilitiesProvided", [])
+                            module.interfaces_json = module_spec.get("interfaces", {})
+                            module.dependencies_json = module_spec.get("dependencies", {})
+                            module.updated_by = request.user
+                            module.save(
+                                update_fields=[
+                                    "namespace",
+                                    "name",
+                                    "type",
+                                    "current_version",
+                                    "latest_module_spec_json",
+                                    "capabilities_provided_json",
+                                    "interfaces_json",
+                                    "dependencies_json",
+                                    "updated_by",
+                                    "updated_at",
+                                ]
+                            )
+                        session.status = "published"
+                        session.save(update_fields=["status", "updated_at"])
+                        messages.success(request, "Module published to registry.")
+                        return redirect("module-detail", module_id=module.id)
+                    if kind == "bundle":
+                        metadata = draft.get("metadata", {})
+                        namespace = metadata.get("namespace", "core")
+                        name = metadata.get("name", "bundle")
+                        fqn = draft.get("bundleFqn") or f"{namespace}.bundle.{name}"
+                        bundle, created = Bundle.objects.get_or_create(
+                            fqn=fqn,
+                            defaults={
+                                "namespace": namespace,
+                                "name": name,
+                                "current_version": metadata.get("version", "0.1.0"),
+                                "bundle_spec_json": draft,
+                                "created_by": request.user,
+                                "updated_by": request.user,
+                            },
+                        )
+                        if not created:
+                            bundle.namespace = namespace
+                            bundle.name = name
+                            bundle.current_version = metadata.get("version", bundle.current_version)
+                            bundle.bundle_spec_json = draft
+                            bundle.updated_by = request.user
+                            bundle.save(
+                                update_fields=[
+                                    "namespace",
+                                    "name",
+                                    "current_version",
+                                    "bundle_spec_json",
+                                    "updated_by",
+                                    "updated_at",
+                                ]
+                            )
+                        session.status = "published"
+                        session.save(update_fields=["status", "updated_at"])
+                        messages.success(request, "Bundle published to registry.")
+                        return redirect("bundle-detail", bundle_id=bundle.id)
+
+    context = {
+        "session": session,
+        "voice_notes": voice_notes,
+        "draft_json": json.dumps(session.current_draft_json or {}, indent=2),
+    }
+    return render(request, "xyn/blueprint_studio.html", context)
+
+
+@csrf_exempt
+@login_required
+def create_draft_session(request: HttpRequest) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    if staff_error := _require_staff(request):
+        return staff_error
+    payload = json.loads(request.body.decode("utf-8"))
+    name = payload.get("name") or f"Blueprint draft {uuid.uuid4()}"
+    blueprint_kind = payload.get("blueprint_kind", "solution")
+    session = BlueprintDraftSession.objects.create(
+        name=name,
+        blueprint_kind=blueprint_kind,
+        created_by=request.user,
+        updated_by=request.user,
+    )
+    return JsonResponse({"session_id": str(session.id)})
+
+
+@csrf_exempt
+@login_required
+def list_modules(request: HttpRequest) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    if request.method == "POST":
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+        errors = _validate_blueprint_spec(payload, "module")
+        if errors:
+            return JsonResponse({"error": "Invalid ModuleSpec", "details": errors}, status=400)
+        module = _module_from_spec(payload, request.user)
+        return JsonResponse({"id": str(module.id), "fqn": module.fqn})
+    qs = Module.objects.all()
+    if capability := request.GET.get("capability"):
+        qs = qs.filter(capabilities_provided_json__contains=[capability])
+    if module_type := request.GET.get("type"):
+        qs = qs.filter(type=module_type)
+    if namespace := request.GET.get("namespace"):
+        qs = qs.filter(namespace=namespace)
+    if query := request.GET.get("q"):
+        qs = qs.filter(models.Q(name__icontains=query) | models.Q(fqn__icontains=query))
+    data = [
+        {
+            "id": str(module.id),
+            "fqn": module.fqn,
+            "name": module.name,
+            "namespace": module.namespace,
+            "type": module.type,
+            "current_version": module.current_version,
+            "status": module.status,
+        }
+        for module in qs.order_by("namespace", "name")
+    ]
+    return JsonResponse({"modules": data})
+
+
+@login_required
+def get_module(request: HttpRequest, module_ref: str) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    try:
+        module = Module.objects.get(id=module_ref)
+    except (Module.DoesNotExist, ValueError):
+        module = get_object_or_404(Module, fqn=module_ref)
+    return JsonResponse(
+        {
+            "id": str(module.id),
+            "fqn": module.fqn,
+            "name": module.name,
+            "namespace": module.namespace,
+            "type": module.type,
+            "current_version": module.current_version,
+            "status": module.status,
+            "module_spec": module.latest_module_spec_json,
+        }
+    )
+
+
+@csrf_exempt
+@login_required
+def list_capabilities(request: HttpRequest) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    if request.method == "POST":
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+        schema = _load_schema("CapabilitySpec.schema.json")
+        validator = Draft202012Validator(schema)
+        validation_errors = [
+            f"{'.'.join(str(p) for p in err.path) if err.path else 'root'}: {err.message}"
+            for err in sorted(validator.iter_errors(payload), key=lambda e: e.path)
+        ]
+        if validation_errors:
+            return JsonResponse({"error": "Invalid CapabilitySpec", "details": validation_errors}, status=400)
+        capability = _capability_from_spec(payload, request.user)
+        return JsonResponse({"id": str(capability.id), "name": capability.name})
+    qs = Capability.objects.all()
+    if query := request.GET.get("q"):
+        qs = qs.filter(name__icontains=query)
+    data = [
+        {
+            "id": str(capability.id),
+            "name": capability.name,
+            "version": capability.version,
+        }
+        for capability in qs.order_by("name")
+    ]
+    return JsonResponse({"capabilities": data})
+
+
+@login_required
+def get_capability(request: HttpRequest, capability_ref: str) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    try:
+        capability = Capability.objects.get(id=capability_ref)
+    except (Capability.DoesNotExist, ValueError):
+        capability = get_object_or_404(Capability, name=capability_ref)
+    return JsonResponse(
+        {
+            "id": str(capability.id),
+            "name": capability.name,
+            "version": capability.version,
+            "capability_spec": capability.capability_spec_json,
+        }
+    )
+
+
+@csrf_exempt
+@login_required
+def list_bundles(request: HttpRequest) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    if request.method == "POST":
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+        schema = _load_schema("BundleSpec.schema.json")
+        validator = Draft202012Validator(schema)
+        validation_errors = [
+            f"{'.'.join(str(p) for p in err.path) if err.path else 'root'}: {err.message}"
+            for err in sorted(validator.iter_errors(payload), key=lambda e: e.path)
+        ]
+        if validation_errors:
+            return JsonResponse({"error": "Invalid BundleSpec", "details": validation_errors}, status=400)
+        bundle = _bundle_from_spec(payload, request.user)
+        return JsonResponse({"id": str(bundle.id), "fqn": bundle.fqn})
+    qs = Bundle.objects.all()
+    if namespace := request.GET.get("namespace"):
+        qs = qs.filter(namespace=namespace)
+    if query := request.GET.get("q"):
+        qs = qs.filter(models.Q(name__icontains=query) | models.Q(fqn__icontains=query))
+    data = [
+        {
+            "id": str(bundle.id),
+            "fqn": bundle.fqn,
+            "name": bundle.name,
+            "namespace": bundle.namespace,
+            "current_version": bundle.current_version,
+            "status": bundle.status,
+        }
+        for bundle in qs.order_by("namespace", "name")
+    ]
+    return JsonResponse({"bundles": data})
+
+
+@login_required
+def get_bundle(request: HttpRequest, bundle_ref: str) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    try:
+        bundle = Bundle.objects.get(id=bundle_ref)
+    except (Bundle.DoesNotExist, ValueError):
+        bundle = get_object_or_404(Bundle, fqn=bundle_ref)
+    return JsonResponse(
+        {
+            "id": str(bundle.id),
+            "fqn": bundle.fqn,
+            "name": bundle.name,
+            "namespace": bundle.namespace,
+            "current_version": bundle.current_version,
+            "status": bundle.status,
+            "bundle_spec": bundle.bundle_spec_json,
+        }
+    )
+
+
+@csrf_exempt
+@login_required
+def upload_voice_note(request: HttpRequest) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    if staff_error := _require_staff(request):
+        return staff_error
+    audio_file = request.FILES.get("file")
+    if not audio_file:
+        return JsonResponse({"error": "Missing file"}, status=400)
+    session_id = request.POST.get("session_id")
+    voice_note = VoiceNote.objects.create(
+        title=request.POST.get("title", ""),
+        audio_file=audio_file,
+        mime_type=request.POST.get("mime_type", ""),
+        duration_ms=request.POST.get("duration_ms") or None,
+        language_code=request.POST.get("language_code", "en-US"),
+        created_by=request.user,
+    )
+    if session_id:
+        session = get_object_or_404(BlueprintDraftSession, id=session_id)
+        ordering = DraftSessionVoiceNote.objects.filter(draft_session=session).count()
+        DraftSessionVoiceNote.objects.create(
+            draft_session=session, voice_note=voice_note, ordering=ordering
+        )
+    return JsonResponse({"voice_note_id": str(voice_note.id)})
+
+
+@csrf_exempt
+@login_required
+def enqueue_transcription(request: HttpRequest, voice_note_id: str) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    voice_note = get_object_or_404(VoiceNote, id=voice_note_id)
+    mode = _async_mode()
+    if mode == "redis":
+        voice_note.status = "queued"
+        job_id = _enqueue_job("articles.worker_tasks.transcribe_voice_note", str(voice_note.id))
+    else:
+        voice_note.status = "transcribing"
+        job_id = str(uuid.uuid4())
+        _executor.submit(transcribe_voice_note, str(voice_note.id))
+    voice_note.job_id = job_id
+    voice_note.error = ""
+    voice_note.save(update_fields=["status", "job_id", "error"])
+    return JsonResponse({"status": voice_note.status, "job_id": job_id})
+
+
+@csrf_exempt
+@login_required
+def enqueue_draft_generation(request: HttpRequest, session_id: str) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    session = get_object_or_404(BlueprintDraftSession, id=session_id)
+    mode = _async_mode()
+    if mode == "redis":
+        session.status = "queued"
+        job_id = _enqueue_job("articles.worker_tasks.generate_blueprint_draft", str(session.id))
+    else:
+        session.status = "drafting"
+        job_id = str(uuid.uuid4())
+        _executor.submit(generate_blueprint_draft, str(session.id))
+    session.job_id = job_id
+    session.last_error = ""
+    session.save(update_fields=["status", "job_id", "last_error"])
+    return JsonResponse({"status": session.status, "job_id": job_id})
+
+
+@csrf_exempt
+@login_required
+def enqueue_draft_revision(request: HttpRequest, session_id: str) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    session = get_object_or_404(BlueprintDraftSession, id=session_id)
+    instruction = ""
+    if request.content_type and "application/json" in request.content_type:
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+        instruction = payload.get("instruction", "")
+    else:
+        instruction = request.POST.get("instruction", "")
+    mode = _async_mode()
+    if mode == "redis":
+        session.status = "queued"
+        job_id = _enqueue_job("articles.worker_tasks.revise_blueprint_draft", str(session.id), instruction)
+    else:
+        session.status = "drafting"
+        job_id = str(uuid.uuid4())
+        _executor.submit(revise_blueprint_draft, str(session.id), instruction)
+    session.job_id = job_id
+    session.last_error = ""
+    session.save(update_fields=["status", "job_id", "last_error"])
+    return JsonResponse({"status": session.status, "job_id": job_id})
+
+
+@login_required
+def get_voice_note(request: HttpRequest, voice_note_id: str) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    voice_note = get_object_or_404(VoiceNote, id=voice_note_id)
+    transcript = getattr(voice_note, "transcript", None)
+    return JsonResponse(
+        {
+            "id": str(voice_note.id),
+            "status": voice_note.status,
+            "transcript": transcript.transcript_text if transcript else None,
+            "job_id": voice_note.job_id,
+            "last_error": voice_note.error,
+        }
+    )
+
+
+@login_required
+def get_draft_session(request: HttpRequest, session_id: str) -> JsonResponse:
+    if staff_error := _require_staff(request):
+        return staff_error
+    session = get_object_or_404(BlueprintDraftSession, id=session_id)
+    return JsonResponse(
+        {
+            "id": str(session.id),
+            "blueprint_kind": session.blueprint_kind,
+            "status": session.status,
+            "draft": session.current_draft_json,
+            "requirements_summary": session.requirements_summary,
+            "validation_errors": session.validation_errors_json or [],
+            "suggested_fixes": session.suggested_fixes_json or [],
+            "job_id": session.job_id,
+            "last_error": session.last_error,
+            "diff_summary": session.diff_summary,
+        }
+    )
+
+
+@csrf_exempt
+def internal_voice_note(request: HttpRequest, voice_note_id: str) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    voice_note = get_object_or_404(VoiceNote, id=voice_note_id)
+    transcript = getattr(voice_note, "transcript", None)
+    return JsonResponse(
+        {
+            "id": str(voice_note.id),
+            "language_code": voice_note.language_code,
+            "mime_type": voice_note.mime_type,
+            "status": voice_note.status,
+            "transcript": transcript.transcript_text if transcript else None,
+            "audio_url": f"/xyn/internal/voice-notes/{voice_note.id}/audio",
+        }
+    )
+
+
+@csrf_exempt
+def internal_voice_note_audio(request: HttpRequest, voice_note_id: str) -> HttpResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    voice_note = get_object_or_404(VoiceNote, id=voice_note_id)
+    return FileResponse(voice_note.audio_file.open("rb"), content_type=voice_note.mime_type or "application/octet-stream")
+
+
+@csrf_exempt
+def internal_voice_note_transcript(request: HttpRequest, voice_note_id: str) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    voice_note = get_object_or_404(VoiceNote, id=voice_note_id)
+    payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    transcript_text = payload.get("transcript_text", "")
+    confidence = payload.get("confidence")
+    raw_response_json = payload.get("raw_response_json")
+    VoiceTranscript.objects.update_or_create(
+        voice_note=voice_note,
+        defaults={
+            "provider": payload.get("provider", "google_stt"),
+            "transcript_text": transcript_text,
+            "confidence": confidence,
+            "raw_response_json": raw_response_json,
+        },
+    )
+    voice_note.status = "transcribed"
+    voice_note.error = ""
+    voice_note.save(update_fields=["status", "error"])
+    return JsonResponse({"status": "transcribed"})
+
+
+@csrf_exempt
+def internal_voice_note_error(request: HttpRequest, voice_note_id: str) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    voice_note = get_object_or_404(VoiceNote, id=voice_note_id)
+    payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    voice_note.status = "failed"
+    voice_note.error = payload.get("error", "Unknown error")
+    voice_note.save(update_fields=["status", "error"])
+    return JsonResponse({"status": "failed"})
+
+
+@csrf_exempt
+def internal_voice_note_status(request: HttpRequest, voice_note_id: str) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    voice_note = get_object_or_404(VoiceNote, id=voice_note_id)
+    payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    status = payload.get("status")
+    if status:
+        voice_note.status = status
+    voice_note.save(update_fields=["status"])
+    return JsonResponse({"status": voice_note.status})
+
+
+@csrf_exempt
+def internal_draft_session(request: HttpRequest, session_id: str) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    session = get_object_or_404(BlueprintDraftSession, id=session_id)
+    links = DraftSessionVoiceNote.objects.filter(draft_session=session).select_related("voice_note", "voice_note__transcript").order_by("ordering")
+    transcripts = []
+    for link in links:
+        transcript = getattr(link.voice_note, "transcript", None)
+        if transcript:
+            transcripts.append(transcript.transcript_text)
+    return JsonResponse(
+        {
+            "id": str(session.id),
+            "blueprint_kind": session.blueprint_kind,
+            "requirements_summary": session.requirements_summary,
+            "draft": session.current_draft_json,
+            "transcripts": transcripts,
+        }
+    )
+
+
+@csrf_exempt
+def internal_draft_session_update(request: HttpRequest, session_id: str) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    session = get_object_or_404(BlueprintDraftSession, id=session_id)
+    payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    session.current_draft_json = payload.get("draft_json")
+    session.requirements_summary = payload.get("requirements_summary", "")
+    session.validation_errors_json = payload.get("validation_errors", [])
+    session.suggested_fixes_json = payload.get("suggested_fixes", [])
+    session.diff_summary = payload.get("diff_summary", "")
+    session.status = payload.get("status", session.status)
+    session.last_error = payload.get("last_error", "")
+    session.save(
+        update_fields=[
+            "current_draft_json",
+            "requirements_summary",
+            "validation_errors_json",
+            "suggested_fixes_json",
+            "diff_summary",
+            "status",
+            "last_error",
+            "updated_at",
+        ]
+    )
+    return JsonResponse({"status": session.status})
+
+
+@csrf_exempt
+def internal_draft_session_error(request: HttpRequest, session_id: str) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    session = get_object_or_404(BlueprintDraftSession, id=session_id)
+    payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    session.status = "failed"
+    session.last_error = payload.get("error", "Unknown error")
+    session.save(update_fields=["status", "last_error"])
+    return JsonResponse({"status": "failed"})
+
+
+@csrf_exempt
+def internal_draft_session_status(request: HttpRequest, session_id: str) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    session = get_object_or_404(BlueprintDraftSession, id=session_id)
+    payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    status = payload.get("status")
+    if status:
+        session.status = status
+    session.save(update_fields=["status"])
+    return JsonResponse({"status": session.status})
+
+
+@csrf_exempt
+def internal_openai_config(request: HttpRequest) -> JsonResponse:
+    if token_error := _require_internal_token(request):
+        return token_error
+    from .models import OpenAIConfig
+
+    config = OpenAIConfig.objects.first()
+    if not config:
+        return JsonResponse({"error": "Missing OpenAI config"}, status=404)
+    return JsonResponse(
+        {
+            "api_key": config.api_key,
+            "model": config.default_model,
+        }
+    )
