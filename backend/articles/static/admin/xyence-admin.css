@@ -377,6 +377,20 @@ div.breadcrumbs a {
   width: 100%;
 }
 
+.app-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.app-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 #content-main {
   flex: 1 1 auto;
   float: none;
@@ -516,6 +530,12 @@ div.breadcrumbs a {
   .dashboard .app-list td.addlink,
   .dashboard .app-list td.changelink {
     display: none;
+  }
+
+  .app-actions {
+    display: block;
+    margin-left: 0;
+    margin-top: 6px;
   }
 }
 
