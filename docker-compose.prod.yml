@@ -5,13 +5,12 @@ services:
     depends_on:
       - frontend
       - backend
+      - xyn-ui
     environment:
       DOMAIN: ${DOMAIN}
     ports:
       - "80:80"
       - "443:443"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./nginx/conf.d:/etc/nginx/templates:ro
       - certbot_www:/var/www/certbot
@@ -27,6 +26,11 @@ services:
       - certbot_certs:/etc/letsencrypt
     entrypoint: >
       /bin/sh -c "trap exit TERM; while :; do sleep 12h & wait $${!}; certbot renew; done"
+
+  xyn-ui:
+    build:
+      context: ../xyn-ui
+    restart: unless-stopped
 
   nginx-reload:
     image: nginx:1.27-alpine
