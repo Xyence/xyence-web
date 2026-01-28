@@ -1,5 +1,6 @@
 import datetime as dt
 import os
+import time
 from typing import Any, Dict, Optional
 
 import boto3
@@ -40,11 +41,11 @@ if command -v apt-get >/dev/null 2>&1; then
   systemctl enable docker
   systemctl start docker
 elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y docker docker-compose-plugin git curl
+  dnf install -y docker docker-compose-plugin git curl amazon-ssm-agent
   systemctl enable docker
   systemctl start docker
 elif command -v yum >/dev/null 2>&1; then
-  yum install -y docker docker-compose-plugin git curl
+  yum install -y docker docker-compose-plugin git curl amazon-ssm-agent
   systemctl enable docker
   systemctl start docker
 fi
@@ -215,12 +216,18 @@ def refresh_instance(instance: ProvisionedInstance) -> ProvisionedInstance:
                 Parameters={"commands": ["test -f /var/lib/xyn/READY"]},
             )
             command_id = cmd["Command"]["CommandId"]
-            out = _ssm(instance.aws_region).get_command_invocation(
-                CommandId=command_id,
-                InstanceId=instance.instance_id,
-            )
-            if out.get("Status") == "Success":
-                instance.status = "ready"
+            for _ in range(6):
+                try:
+                    out = _ssm(instance.aws_region).get_command_invocation(
+                        CommandId=command_id,
+                        InstanceId=instance.instance_id,
+                    )
+                except ClientError:
+                    time.sleep(1)
+                    continue
+                if out.get("Status") == "Success":
+                    instance.status = "ready"
+                break
         except (ClientError, BotoCoreError):
             pass
 
@@ -250,7 +257,17 @@ def fetch_bootstrap_log(instance: ProvisionedInstance, tail: int = 200) -> Dict[
         Parameters={"commands": [f"tail -n {tail} /var/log/xyn-bootstrap.log || true"]},
     )
     command_id = cmd["Command"]["CommandId"]
-    out = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance.instance_id)
+    out = None
+    last_error: Optional[Exception] = None
+    for _ in range(10):
+        try:
+            out = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance.instance_id)
+            break
+        except ClientError as exc:
+            last_error = exc
+            time.sleep(1)
+    if out is None:
+        raise last_error or RuntimeError("SSM command invocation not found yet")
     return {
         "status": out.get("Status"),
         "stdout": out.get("StandardOutputContent", ""),
