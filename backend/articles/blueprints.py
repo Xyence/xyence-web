@@ -368,6 +368,18 @@ def new_draft_session_view(request: HttpRequest) -> HttpResponse:
             created_by=request.user,
             updated_by=request.user,
         )
+        resolved = _resolve_context_packs(session, context_pack_ids)
+        session.context_pack_refs_json = resolved["refs"]
+        session.effective_context_hash = resolved["hash"]
+        session.effective_context_preview = resolved["preview"]
+        session.save(
+            update_fields=[
+                "context_pack_refs_json",
+                "effective_context_hash",
+                "effective_context_preview",
+                "updated_at",
+            ]
+        )
         return redirect("blueprint-studio", session_id=session.id)
     return redirect("blueprint-list")
 
@@ -668,6 +680,18 @@ def create_draft_session(request: HttpRequest) -> JsonResponse:
         context_pack_ids=context_pack_ids,
         created_by=request.user,
         updated_by=request.user,
+    )
+    resolved = _resolve_context_packs(session, context_pack_ids)
+    session.context_pack_refs_json = resolved["refs"]
+    session.effective_context_hash = resolved["hash"]
+    session.effective_context_preview = resolved["preview"]
+    session.save(
+        update_fields=[
+            "context_pack_refs_json",
+            "effective_context_hash",
+            "effective_context_preview",
+            "updated_at",
+        ]
     )
     return JsonResponse({"session_id": str(session.id)})
 
