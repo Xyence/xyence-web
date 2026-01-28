@@ -474,6 +474,11 @@ div.breadcrumbs a {
     padding-right: 0;
   }
 
+  .dashboard .app-list {
+    min-width: 0;
+    width: 100%;
+  }
+
   .dashboard #content-main .module {
     overflow-x: auto;
   }
@@ -519,6 +524,8 @@ div.breadcrumbs a {
 
   .dashboard .app-list table {
     width: 100% !important;
+    min-width: 0;
+    table-layout: fixed;
   }
 
   .dashboard .app-list th,
