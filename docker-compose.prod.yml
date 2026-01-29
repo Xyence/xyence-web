@@ -3,7 +3,6 @@ services:
     image: nginx:1.27-alpine
     restart: unless-stopped
     depends_on:
-      - frontend
       - backend
       - xyn-ui
     environment:
@@ -30,6 +29,7 @@ services:
   xyn-ui:
     build:
       context: ../xyn-ui
+    image: xyn-ui
     restart: unless-stopped
 
   nginx-reload:
@@ -44,4 +44,8 @@ services:
 
 volumes:
   certbot_www:
+    name: xyence-web_certbot_www
+    external: true
   certbot_certs:
+    name: xyence-web_certbot_certs
+    external: true

@@ -8,15 +8,11 @@
   </div>
   {% if available_apps %}
     {% for app in available_apps %}
-      {% if app.app_label == "articles" %}
-        <div class="app-{{ app.app_label }} module{% if app.app_url in request.path|urlencode %} current-app{% endif %}">
+      {% if app.app_label == "web" %}
+        <div class="app-web module{% if app.app_url in request.path|urlencode %} current-app{% endif %}">
           <table>
             <caption>
-              {% if app.app_label == "auth" %}
-                <a href="{{ app.app_url }}" class="section" title="{% blocktranslate with name=app.name %}Models in the {{ name }} application{% endblocktranslate %}">Authentication &amp; Authorization</a>
-              {% else %}
-                <a href="{{ app.app_url }}" class="section" title="{% blocktranslate with name=app.name %}Models in the {{ name }} application{% endblocktranslate %}">{{ app.name }}</a>
-              {% endif %}
+              <a href="{{ app.app_url }}" class="section" title="{% blocktranslate with name=app.name %}Models in the {{ name }} application{% endblocktranslate %}">Web</a>
             </caption>
             <thead class="visually-hidden">
               <tr>
@@ -26,43 +22,62 @@
               </tr>
             </thead>
             {% for model in app.models %}
-              {% if model.object_name == "ArticleVersion" or model.object_name == "Article" %}
-                {% with model_name=model.object_name|lower %}
-                  <tr class="model-{{ model_name }}{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
-                    <th scope="row" id="{{ app.app_label }}-{{ model_name }}">
-                      {% if model.admin_url %}
-                        <a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>
-                          {% if model.object_name == "OpenAIConfig" %}
-                            OpenAI Configs
-                          {% elif model.object_name == "ArticleVersion" %}
-                            Article Versions
-                          {% else %}
-                            {{ model.name|title }}
-                          {% endif %}
-                        </a>
-                      {% else %}
-                        {% if model.object_name == "OpenAIConfig" %}
-                          OpenAI Configs
-                        {% elif model.object_name == "ArticleVersion" %}
-                          Article Versions
-                        {% else %}
-                          {{ model.name|title }}
-                        {% endif %}
-                      {% endif %}
-                    </th>
-                    {% if model.add_url %}
-                      <td><a href="{{ model.add_url }}" class="addlink" aria-describedby="{{ app.app_label }}-{{ model_name }}">{% translate 'Add' %}</a></td>
+              {% with model_name=model.object_name|lower %}
+                <tr class="model-{{ model_name }}{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row" id="{{ app.app_label }}-{{ model_name }}">
+                    {% if model.admin_url %}
+                      <a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name|title }}</a>
                     {% else %}
-                      <td></td>
+                      {{ model.name|title }}
                     {% endif %}
+                  </th>
+                  {% if model.add_url %}
+                    <td><a href="{{ model.add_url }}" class="addlink" aria-describedby="{{ app.app_label }}-{{ model_name }}">{% translate 'Add' %}</a></td>
+                  {% else %}
                     <td></td>
-                  </tr>
-                {% endwith %}
+                  {% endif %}
+                  <td></td>
+                </tr>
+              {% endwith %}
+            {% endfor %}
+            {% for subapp in available_apps %}
+              {% if subapp.app_label == "articles" %}
+                {% for model in subapp.models %}
+                  {% if model.object_name == "ArticleVersion" or model.object_name == "Article" %}
+                    {% with model_name=model.object_name|lower %}
+                      <tr class="model-{{ model_name }}{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                        <th scope="row" id="{{ subapp.app_label }}-{{ model_name }}">
+                          {% if model.admin_url %}
+                            <a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>
+                              {% if model.object_name == "ArticleVersion" %}
+                                Article Versions
+                              {% else %}
+                                {{ model.name|title }}
+                              {% endif %}
+                            </a>
+                          {% else %}
+                            {% if model.object_name == "ArticleVersion" %}
+                              Article Versions
+                            {% else %}
+                              {{ model.name|title }}
+                            {% endif %}
+                          {% endif %}
+                        </th>
+                        {% if model.add_url %}
+                          <td><a href="{{ model.add_url }}" class="addlink" aria-describedby="{{ subapp.app_label }}-{{ model_name }}">{% translate 'Add' %}</a></td>
+                        {% else %}
+                          <td></td>
+                        {% endif %}
+                        <td></td>
+                      </tr>
+                    {% endwith %}
+                  {% endif %}
+                {% endfor %}
               {% endif %}
             {% endfor %}
           </table>
         </div>
-
+      {% elif app.app_label == "articles" %}
         <div class="app-ai-studio module">
           <table>
             <caption>
@@ -131,7 +146,6 @@
             </tr>
           </table>
         </div>
-
         <div class="app-integrations module">
           <table>
             <caption>

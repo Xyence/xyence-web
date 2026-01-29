@@ -18,6 +18,7 @@ services:
   backend:
     build:
       context: ./backend
+    image: xyn-api-backend
     restart: unless-stopped
     env_file:
       - ./backend/.env
@@ -43,18 +44,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  frontend:
-    build:
-      context: ./frontend
-    restart: unless-stopped
-    environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
-    ports:
-      - "8080:80"
-
   worker:
     build:
       context: ./backend
+    image: xyn-api-worker
     restart: unless-stopped
     env_file:
       - ./backend/.env
@@ -74,5 +67,11 @@ services:
 
 volumes:
   postgres_data:
+    name: xyence-web_postgres_data
+    external: true
   backend_media:
+    name: xyence-web_backend_media
+    external: true
   backend_static:
+    name: xyence-web_backend_static
+    external: true

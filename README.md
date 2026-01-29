@@ -1,10 +1,9 @@
-# Xyence Web
+# xyn-api
 
-Django + React application for Xyence consulting, including a publishing system for articles and admin management.
+Django API + admin backend for Xyn. Public content is served by xyn-ui and loaded from `/xyn/api/public/*`.
 
 ## Stack
 - Django + Django REST Framework
-- React (Vite)
 - PostgreSQL
 - Docker Compose
 
@@ -18,7 +17,7 @@ Django + React application for Xyence consulting, including a publishing system 
    - `docker compose exec backend python manage.py migrate`
    - `docker compose exec backend python manage.py createsuperuser`
 5. Admin panel: `http://localhost:8000/admin/`
-6. Frontend: `http://localhost:8080/`
+6. Public site is served by xyn-ui (via nginx in prod).
 
 ## Production reverse proxy (Nginx + Certbot)
 Use the production compose file to enable HTTPS. This is **not** required for local dev.
@@ -28,7 +27,7 @@ Use the production compose file to enable HTTPS. This is **not** required for lo
 DOMAIN=xyence.io
 ```
 
-2) Start core services + nginx:
+2) Start core services + nginx (xyn-ui served as the public site):
 ```
 docker compose --env-file prod.env -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
@@ -60,8 +59,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec backend pyt
 - In Google Cloud OAuth settings, add `http://localhost:8000/accounts/google/login/callback/` (or your production host) as an authorized redirect URI.
 
 ## Content management
-- Articles are managed in Django admin with a rich-text editor.
-- Public API is available at `/api/articles/` and `/api/articles/:slug/`.
+- Pages/MenuItems/WebSections/Articles are managed in Django admin.
+- Public API is available at:
+  - `/xyn/api/public/menu`
+  - `/xyn/api/public/pages`
+  - `/xyn/api/public/pages/:slug`
+  - `/xyn/api/public/pages/:slug/sections`
+  - `/xyn/api/public/home`
+  - `/xyn/api/public/articles`
+  - `/xyn/api/public/articles/:slug`
+
+## Public site (xyn-ui)
+- xyn-ui is the public frontend for `https://xyence.io` and consumes the public API endpoints above.
+- All traffic is served on the primary domain; `xyn.xyence.io` is no longer used.
 
 ## AI Studio
 - Create an `OpenAI Config` in admin to store your API key and default model.
@@ -75,10 +85,3 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec backend pyt
   - `XYNSEED_API_TOKEN` (optional bearer token)
   - Environment: `XYNSEED_BASE_URL`, `XYNSEED_API_TOKEN`
  - When running via Docker Compose on Linux, the default `XYNSEED_BASE_URL` uses `host.docker.internal` and `extra_hosts` to reach the host.
-
-## GitHub Context (AI Studio)
-- Create a `GitHub Config` with a personal access token and organization name.
-- Use the `GitHub Config` admin action to sync repositories.
-- Select repositories in AI Studio to pull relevant markdown context into prompts.
- - You can also connect GitHub via OAuth (allauth GitHub provider) and leave the PAT empty.
-# xyence-web

@@ -51,6 +51,15 @@ from articles.provisioning_views import (
     get_instance,
     list_instances,
 )
+from articles.public_views import public_article_detail, public_articles
+from web.public_views import (
+    public_home,
+    public_menu,
+    public_page_detail,
+    public_page_sections,
+    public_pages,
+    public_site_config,
+)
 def healthcheck(_request):
     return JsonResponse(
         {"status": "ok", "admin": "/admin/", "articles": "/api/articles/"},
@@ -60,6 +69,14 @@ urlpatterns = [
     path("", healthcheck),
     path("admin/", admin.site.urls),
     path("api/", include("articles.urls")),
+    path("xyn/api/public/menu", public_menu),
+    path("xyn/api/public/pages", public_pages),
+    path("xyn/api/public/pages/<slug:slug>", public_page_detail),
+    path("xyn/api/public/pages/<slug:slug>/sections", public_page_sections),
+    path("xyn/api/public/home", public_home),
+    path("xyn/api/public/site", public_site_config),
+    path("xyn/api/public/articles", public_articles),
+    path("xyn/api/public/articles/<slug:slug>", public_article_detail),
     path("xyn/blueprints/", blueprint_list_view, name="blueprint-list"),
     path("xyn/studio/blueprints/new", new_draft_session_view, name="blueprint-session-new"),
     path("xyn/blueprints/<uuid:blueprint_id>/", blueprint_detail_view, name="blueprint-detail"),
